@@ -71,10 +71,6 @@ contract MiningPool {
     ///         100 = 1% (we divide by this, so 100 means 1/100 = 1%)
     uint256 public constant MAX_SHARE_CREDIT_DIVISOR = 100;
 
-    /// @notice The chain ID this contract is locked to. Set at deployment.
-    ///         Prevents cross-chain replay attacks.
-    uint256 public immutable deployChainId;
-
     // =========================================================================
     //                              DATA TYPES
     // =========================================================================
@@ -170,7 +166,7 @@ contract MiningPool {
     //                              ERRORS
     // =========================================================================
 
-    error WrongChain();
+    error WrongChain(uint256 expected, uint256 actual);
     error CounterNotIncreasing();
     error BelowMinDifficulty();
     error InvalidDayNumber();
@@ -183,10 +179,14 @@ contract MiningPool {
     //                          CONSTRUCTOR
     // =========================================================================
 
-    /// @notice Deploy the MiningPool. Locks to the current chain, starts day 0,
+    /// @notice Deploy the MiningPool. Verifies chain ID, starts day 0,
     ///         and deploys the PlayerNFT and CurrencyNFT contracts.
-    constructor() {
-        deployChainId = block.chainid;
+    ///         The expectedChainId parameter prevents accidental deployment
+    ///         to the wrong chain. After deployment, the contract address
+    ///         itself provides chain binding (it's part of the CREATE2 hash).
+    /// @param expectedChainId The chain ID this pool is intended for (e.g. 8453 for Base)
+    constructor(uint256 expectedChainId) {
+        if (block.chainid != expectedChainId) revert WrongChain(expectedChainId, block.chainid);
         dayZeroTimestamp = block.timestamp;
 
         // Deploy NFT contracts — they store address(this) as their authorized minter
@@ -234,9 +234,6 @@ contract MiningPool {
         uint256 counter,
         bytes32 salt
     ) external {
-        // --- Chain lock ---
-        if (block.chainid != deployChainId) revert WrongChain();
-
         // --- Advance day if needed ---
         uint256 today = getCurrentDay();
         if (today > currentDay) {
@@ -377,7 +374,6 @@ contract MiningPool {
     ///         Anyone can call this — no share submission required.
     ///         Cheap to call, idempotent (no-op if already current).
     function getCurrentDayHash() external {
-        if (block.chainid != deployChainId) revert WrongChain();
         uint256 today = getCurrentDay();
         if (today > currentDay) {
             _advanceDay(today);
@@ -466,7 +462,6 @@ contract MiningPool {
         uint256 dayNumber,
         uint256 targetDifficulty
     ) external returns (address vanityAddress) {
-        if (block.chainid != deployChainId) revert WrongChain();
         if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
 
         uint256 playerId = uint256(uint160(msg.sender));

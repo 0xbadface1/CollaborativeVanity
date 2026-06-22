@@ -233,9 +233,9 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
 - [x] `LeadingZeros.t.sol` — 11 tests including fuzz test against naive implementation
-- [x] `MiningPool.t.sol` — 43 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
+- [x] `MiningPool.t.sol` — 42 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
 - [x] `NFTIntegration.t.sol` — 22 tests covering PlayerNFT, CurrencyNFT, registration, deployment, full flow
-- [x] 76 tests total, all passing
+- [x] 75 tests total, all passing
 
 ### Phase 2: Token Distribution (NEXT)
 

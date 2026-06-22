@@ -38,7 +38,7 @@ contract MiningPoolTest is Test {
     function setUp() public {
         player1 = makeAddr("player1");
         player2 = makeAddr("player2");
-        pool = new MiningPool();
+        pool = new MiningPool(block.chainid);
     }
 
     // =========================================================================
@@ -143,10 +143,6 @@ contract MiningPoolTest is Test {
     // =========================================================================
     //                      CONSTRUCTOR TESTS
     // =========================================================================
-
-    function test_constructor_setsChainId() public view {
-        assertEq(pool.deployChainId(), block.chainid);
-    }
 
     function test_constructor_setsDayZeroTimestamp() public view {
         assertEq(pool.dayZeroTimestamp(), block.timestamp);
@@ -485,14 +481,9 @@ contract MiningPoolTest is Test {
     //                    CHAIN LOCK TESTS
     // =========================================================================
 
-    function testRevert_submitShare_wrongChain() public {
-        (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 0);
-
-        vm.chainId(999);
-
-        vm.prank(player1);
-        vm.expectRevert(MiningPool.WrongChain.selector);
-        pool.submitShare(16, 0, 0, salt);
+    function testRevert_constructor_wrongChain() public {
+        vm.expectRevert();
+        new MiningPool(999);
     }
 
     // =========================================================================

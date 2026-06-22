@@ -80,12 +80,12 @@ The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` �
 
 ## Tests
 
-Three test suites, 76 tests total, all in `test/`:
+Three test suites, 75 tests total, all in `test/`:
 
 | Suite | Tests | Coverage |
 |---|---|---|
 | `LeadingZeros.t.sol` | 11 | Unit + fuzz (1000 runs) against naive implementation |
-| `MiningPool.t.sol` | 43 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
+| `MiningPool.t.sol` | 42 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
 | `NFTIntegration.t.sol` | 22 | PlayerNFT, CurrencyNFT, registration, deployment, full mine-register-deploy flow |
 
 Run: `~/.foundry/bin/forge test`
@@ -125,7 +125,7 @@ This codebase doubles as a Foundry learning resource. Add thorough documentation
 ## Implementation Status
 
 ### Phase 1: Core System — COMPLETE
-All contracts, 76 tests passing.
+All contracts, 75 tests passing.
 
 ### Phase 2: Token Distribution — NEXT
 - Mint logic in CurrencyToken that reads player/pool scores from MiningPool

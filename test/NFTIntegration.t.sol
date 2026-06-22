@@ -24,7 +24,7 @@ contract NFTIntegrationTest is Test {
     function setUp() public {
         player1 = makeAddr("player1");
         player2 = makeAddr("player2");
-        pool = new MiningPool();
+        pool = new MiningPool(block.chainid);
         playerNFT = pool.playerNFT();
         currencyNFT = pool.currencyNFT();
     }
