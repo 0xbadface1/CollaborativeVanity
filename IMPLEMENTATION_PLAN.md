@@ -142,7 +142,7 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 - `getPoolScoreAt(day)` → pool-wide checkpoint binary search
 - `getInitCodeHash(player, day, difficulty, counter, dayHash)` → for off-chain mining
 - `computeVanityAddress(player, counter, salt, day, difficulty, dayHash)` → verify before registering
-- `publishDayHash()` → publish current day's hash without submitting a share (resolves dayHash bootstrap)
+- `getCurrentDayHash()` → publish current day's hash without submitting a share (resolves dayHash bootstrap)
 
 ### CurrencyToken (ERC-20)
 
@@ -233,7 +233,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
 - [x] `LeadingZeros.t.sol` — 11 tests including fuzz test against naive implementation
-- [x] `MiningPool.t.sol` — 43 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, publishDayHash
+- [x] `MiningPool.t.sol` — 43 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
 - [x] `NFTIntegration.t.sol` — 22 tests covering PlayerNFT, CurrencyNFT, registration, deployment, full flow
 - [x] 76 tests total, all passing
 

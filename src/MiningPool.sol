@@ -374,12 +374,9 @@ contract MiningPool {
     }
 
     /// @notice Publish the current day's hash if it hasn't been published yet.
-    ///         Anyone can call this — no share submission required. This resolves
-    ///         the bootstrap problem: players need the dayHash to compute shares
-    ///         (it's part of initCode), but previously it was only published on
-    ///         the first share submission of each day.
+    ///         Anyone can call this — no share submission required.
     ///         Cheap to call, idempotent (no-op if already current).
-    function publishDayHash() external {
+    function getCurrentDayHash() external {
         if (block.chainid != deployChainId) revert WrongChain();
         uint256 today = getCurrentDay();
         if (today > currentDay) {
@@ -397,7 +394,7 @@ contract MiningPool {
     ///
     ///         The dayHash parameter is the on-chain daily randomness from dayHashes[dayNumber].
     ///         It prevents players from pre-computing shares for future days, since the
-    ///         dayHash is unknowable until publishDayHash() or the first submission triggers its publication.
+    ///         dayHash is unknowable until getCurrentDayHash() or the first submission triggers its publication.
     ///         Callers must look up the dayHash themselves (this function stays pure).
     ///
     /// @param player The player's wallet address

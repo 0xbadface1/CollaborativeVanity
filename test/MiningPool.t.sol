@@ -564,33 +564,33 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     // =========================================================================
-    //                    publishDayHash TESTS
+    //                    getCurrentDayHash TESTS
     // =========================================================================
 
-    function test_publishDayHash_advancesDay() public {
+    function test_getCurrentDayHash_advancesDay() public {
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         assertEq(pool.currentDay(), 0, "Day should not advance until triggered");
 
-        pool.publishDayHash();
+        pool.getCurrentDayHash();
 
         assertEq(pool.currentDay(), 1);
         assertTrue(pool.dayHashes(1) != bytes32(0), "Day 1 hash should be published");
     }
 
-    function test_publishDayHash_idempotent() public {
+    function test_getCurrentDayHash_idempotent() public {
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        pool.publishDayHash();
+        pool.getCurrentDayHash();
         bytes32 dayHash = pool.dayHashes(1);
 
-        pool.publishDayHash();
+        pool.getCurrentDayHash();
         assertEq(pool.dayHashes(1), dayHash, "Hash should not change on second call");
         assertEq(pool.currentDay(), 1);
     }
 
-    function test_publishDayHash_enablesMining() public {
-        // Advance to day 1 via publishDayHash (no share submission needed)
+    function test_getCurrentDayHash_enablesMining() public {
+        // Advance to day 1 via getCurrentDayHash (no share submission needed)
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        pool.publishDayHash();
+        pool.getCurrentDayHash();
 
         bytes32 dayHash = pool.dayHashes(1);
         assertTrue(dayHash != bytes32(0), "Day hash should be available");

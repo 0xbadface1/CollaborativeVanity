@@ -53,7 +53,7 @@ address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 **Counter vs Salt — critical distinction:**
 - `counter` is in initCode (constructor param). Defines WHICH address space to search. Strictly increasing per player per day. Changing counter = entirely different 2^256 search space.
 - `salt` is the CREATE2 salt. The FREE search variable iterated billions of times off-chain. No ordering constraint.
-- `dayHash` is in initCode (constructor param). On-chain daily randomness that prevents pre-computing shares for future days. Published via `publishDayHash()` or automatically on each day's first submission.
+- `dayHash` is in initCode (constructor param). On-chain daily randomness that prevents pre-computing shares for future days. Published via `getCurrentDayHash()` or automatically on each day's first submission.
 
 The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is embedded in MiningPool at compile time. No setter or external loading needed.
 
@@ -85,7 +85,7 @@ Three test suites, 76 tests total, all in `test/`:
 | Suite | Tests | Coverage |
 |---|---|---|
 | `LeadingZeros.t.sol` | 11 | Unit + fuzz (1000 runs) against naive implementation |
-| `MiningPool.t.sol` | 43 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, publishDayHash |
+| `MiningPool.t.sol` | 43 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
 | `NFTIntegration.t.sol` | 22 | PlayerNFT, CurrencyNFT, registration, deployment, full mine-register-deploy flow |
 
 Run: `~/.foundry/bin/forge test`
