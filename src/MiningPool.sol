@@ -1,0 +1,588 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
+import {LeadingZeros} from "./libraries/LeadingZeros.sol";
+import {CurrencyToken} from "./CurrencyToken.sol";
+import {PlayerNFT} from "./PlayerNFT.sol";
+import {CurrencyNFT} from "./CurrencyNFT.sol";
+
+/// @title MiningPool
+/// @notice Central contract for collaborative vanity address mining.
+///
+/// WHAT THIS CONTRACT DOES:
+///   Players submit "shares" — proof-of-work hashes with leading zero bits.
+///   Each share proves computational effort. The contract tracks each player's
+///   cumulative contribution over time using checkpoints (day → cumulative score).
+///
+///   When a player later discovers a vanity address (a currency), the token
+///   distribution is proportional to each player's score at the day before discovery.
+///
+/// HOW SHARES WORK:
+///   The share hash IS the CREATE2 address computation. Every hash attempt
+///   simultaneously searches for:
+///     1. Leading zeros → share difficulty (proof of work)
+///     2. Vanity patterns → potential currency discovery (e.g. 0xBadFace...)
+///
+///   The CREATE2 formula:
+///     address = keccak256(0xff ‖ factory ‖ salt ‖ keccak256(initCode))[12:]
+///
+///   Where:
+///     - factory = this contract's address
+///     - salt = free search variable (bytes32, iterated rapidly off-chain)
+///     - initCode = token bytecode + abi.encode(playerId, dayNumber, targetDifficulty, counter)
+///     - counter = share submission index (strictly increasing, committed in initCode)
+///
+/// PRE-COMMITTED DIFFICULTY (anti-Sybil):
+///   Each player declares a target difficulty BEFORE computing. This target is
+///   baked into the hash (via constructor params in initCode). You can't retroactively
+///   lower your claim — preventing cherry-picking of lucky results.
+///
+///   - If actual difficulty >= target → "valid" share, credited at target (capped at 1% of pool)
+///   - If actual difficulty < target → "invalid" share, credited at pool average
+///   - Pool total ALWAYS gets the full actual difficulty (uncapped)
+///
+/// DAILY SNAPSHOTS:
+///   The first share submission on each new day triggers a snapshot of the previous
+///   day's pool-wide totals. Currency contracts read these snapshots to calculate
+///   proportional distributions.
+///
+/// DAY HASHES:
+///   Each day has a hash derived from on-chain randomness. Players include the day
+///   number in their initCode, anchoring shares to a time window. You cannot generate
+///   shares for a future day (the dayHash hasn't been published yet).
+contract MiningPool {
+    using Checkpoints for Checkpoints.Trace256;
+    using LeadingZeros for bytes32;
+
+    // =========================================================================
+    //                              CONSTANTS
+    // =========================================================================
+
+    /// @notice Minimum number of leading zero bits for a share to be accepted.
+    ///         Prevents spam submissions. 16 bits = 1 in 65,536 hashes on average.
+    ///         Even a phone CPU can find this in under a second.
+    uint256 public constant MIN_SHARE_DIFFICULTY = 16;
+
+    /// @notice Maximum credit any single share can receive, as a percentage of
+    ///         the pool's total integrated difficulty. Prevents a single lucky
+    ///         mega-share from dominating all future distributions.
+    ///         100 = 1% (we divide by this, so 100 means 1/100 = 1%)
+    uint256 public constant MAX_SHARE_CREDIT_DIVISOR = 100;
+
+    /// @notice The chain ID this contract is locked to. Set at deployment.
+    ///         Prevents cross-chain replay attacks.
+    uint256 public immutable deployChainId;
+
+    // =========================================================================
+    //                              DATA TYPES
+    // =========================================================================
+
+    /// @notice Snapshot of pool-wide state at end of a day.
+    ///         Frozen when the first submission of the NEXT day arrives.
+    struct DaySnapshot {
+        uint256 totalShareCount;
+        uint256 totalIntegratedDifficulty;
+    }
+
+    // =========================================================================
+    //                              STATE
+    // =========================================================================
+
+    /// @notice Per-player cumulative score checkpoints.
+    ///         Key = day number, Value = cumulative score up to and including that day.
+    ///         Uses OpenZeppelin's Checkpoints for efficient binary search:
+    ///         upperLookup(day) returns the score at the most recent day <= given day.
+    mapping(uint256 playerId => Checkpoints.Trace256) internal _playerScores;
+
+    /// @notice Pool-wide cumulative score checkpoints (same structure as player scores).
+    ///         Allows currency contracts to look up total pool score at any historical day.
+    Checkpoints.Trace256 internal _poolScores;
+
+    /// @notice Frozen daily snapshots. Indexed by day number.
+    ///         Set when the first submission of day N+1 arrives, freezing day N's state.
+    mapping(uint256 day => DaySnapshot) public daySnapshots;
+
+    /// @notice Day hash for each day. Published once per day.
+    ///         Used to anchor shares to a time window and prove non-pre-computation.
+    mapping(uint256 day => bytes32) public dayHashes;
+
+    /// @notice The last share counter submitted by each player on each day.
+    ///         Shares must be submitted with strictly increasing counters (gaps OK).
+    mapping(uint256 playerId => mapping(uint256 day => uint256)) public lastShareCounter;
+
+    /// @notice Whether a player has submitted any share on a given day.
+    ///         Used to distinguish "counter = 0 means not submitted" from "first share at counter 0".
+    mapping(uint256 playerId => mapping(uint256 day => bool)) public hasSubmittedOnDay;
+
+    /// @notice Running total of all integrated difficulty (uncapped).
+    uint256 public totalIntegratedDifficulty;
+
+    /// @notice Running total of all shares submitted.
+    uint256 public totalShareCount;
+
+    /// @notice The current day number (incremented on first submission of each new day).
+    uint256 public currentDay;
+
+    /// @notice The block.timestamp when day 0 started (contract deployment time).
+    ///         Days are calculated as (block.timestamp - dayZeroTimestamp) / 1 days.
+    uint256 public immutable dayZeroTimestamp;
+
+    /// @notice The PlayerNFT contract. Deployed by this contract's constructor.
+    ///         Mints automatically on a player's first share submission.
+    PlayerNFT public immutable playerNFT;
+
+    /// @notice The CurrencyNFT contract. Deployed by this contract's constructor.
+    ///         Minted when a player registers a vanity address discovery.
+    CurrencyNFT public immutable currencyNFT;
+
+    // =========================================================================
+    //                              EVENTS
+    // =========================================================================
+
+    event ShareSubmitted(
+        uint256 indexed playerId,
+        uint256 indexed day,
+        uint256 counter,
+        bytes32 salt,
+        uint256 actualDifficulty,
+        uint256 targetDifficulty,
+        uint256 creditAwarded,
+        bool valid
+    );
+
+    event DayAdvanced(uint256 indexed newDay, bytes32 dayHash);
+
+    event CurrencyRegistered(
+        uint256 indexed playerId,
+        address indexed vanityAddress,
+        uint256 dayNumber,
+        uint256 counter
+    );
+
+    event CurrencyDeployed(
+        address indexed vanityAddress,
+        address indexed tokenContract
+    );
+
+    // =========================================================================
+    //                              ERRORS
+    // =========================================================================
+
+    error WrongChain();
+    error CounterNotIncreasing();
+    error BelowMinDifficulty();
+    error InvalidDayNumber();
+    error CurrencyAlreadyRegistered();
+    error CurrencyAlreadyDeployed();
+    error NotCurrencyOwner();
+    error CurrencyNotRegistered();
+
+    // =========================================================================
+    //                          CONSTRUCTOR
+    // =========================================================================
+
+    /// @notice Deploy the MiningPool. Locks to the current chain, starts day 0,
+    ///         and deploys the PlayerNFT and CurrencyNFT contracts.
+    constructor() {
+        deployChainId = block.chainid;
+        dayZeroTimestamp = block.timestamp;
+
+        // Deploy NFT contracts — they store address(this) as their authorized minter
+        playerNFT = new PlayerNFT();
+        currencyNFT = new CurrencyNFT();
+
+        // Publish day 0's hash immediately
+        bytes32 day0Hash = keccak256(abi.encodePacked(
+            block.chainid,
+            address(this),
+            block.prevrandao,
+            uint256(0) // day number
+        ));
+        dayHashes[0] = day0Hash;
+
+        emit DayAdvanced(0, day0Hash);
+    }
+
+    // =========================================================================
+    //                          CORE FUNCTIONS
+    // =========================================================================
+
+    /// @notice Submit a share (proof of work).
+    ///
+    /// HOW TO USE (off-chain):
+    ///   1. Pick a targetDifficulty — how many leading zero bits you're "betting" on
+    ///   2. Pick a dayNumber — use the current day (getCurrentDay())
+    ///   3. Pick a counter — must be > your last submitted counter for this day
+    ///   4. Get the initCodeHash from getInitCodeHash(yourAddress, dayNumber, targetDifficulty, counter)
+    ///   5. Search over salt values:
+    ///      For each salt, compute:
+    ///        hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
+    ///      Count leading zero bits of the hash.
+    ///      If high enough, submit that (counter, salt) pair.
+    ///   6. The salt is freely chosen — no ordering constraint.
+    ///      The counter must be strictly increasing (gaps OK).
+    ///
+    /// @param targetDifficulty The difficulty level the player is betting on (in bits)
+    /// @param dayNumber The day this share references (must be current day or earlier with valid hash)
+    /// @param counter Share submission index (must be > last submitted counter for this player+day)
+    /// @param salt The CREATE2 salt — the free search variable found off-chain
+    function submitShare(
+        uint256 targetDifficulty,
+        uint256 dayNumber,
+        uint256 counter,
+        bytes32 salt
+    ) external {
+        // --- Chain lock ---
+        if (block.chainid != deployChainId) revert WrongChain();
+
+        // --- Advance day if needed ---
+        uint256 today = getCurrentDay();
+        if (today > currentDay) {
+            _advanceDay(today);
+        }
+
+        // --- Validate day number ---
+        // Must reference a day whose hash exists (can't be in the future)
+        if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
+
+        // --- Player identity ---
+        // PlayerId = the sender's address cast to uint256.
+        // This is also the future PlayerNFT tokenId.
+        uint256 playerId = uint256(uint160(msg.sender));
+
+        // --- Counter ordering ---
+        // Must be strictly greater than the last submitted counter for this player+day.
+        // First submission on a day: any counter value is fine.
+        if (hasSubmittedOnDay[playerId][dayNumber]) {
+            if (counter <= lastShareCounter[playerId][dayNumber]) {
+                revert CounterNotIncreasing();
+            }
+        }
+
+        // --- Compute the CREATE2 hash on-chain ---
+        // initCodeHash includes the counter (committed per submission).
+        // salt is the free search variable the player iterated over.
+        bytes32 initCodeHash = keccak256(abi.encodePacked(
+            type(CurrencyToken).creationCode,
+            abi.encode(playerId, dayNumber, targetDifficulty, counter)
+        ));
+
+        bytes32 create2Hash = keccak256(abi.encodePacked(
+            bytes1(0xff),
+            address(this),
+            salt,
+            initCodeHash
+        ));
+
+        // Count leading zero bits = actual difficulty achieved
+        uint256 actualDifficulty = create2Hash.countLeadingZeroBits();
+
+        // Must meet minimum difficulty to prevent spam
+        if (actualDifficulty < MIN_SHARE_DIFFICULTY) revert BelowMinDifficulty();
+
+        // --- Calculate credit ---
+        uint256 credit;
+        bool valid;
+
+        if (actualDifficulty >= targetDifficulty && targetDifficulty > 0) {
+            // Valid share: credit = target difficulty, capped at 1% of pool total.
+            // The cap prevents a single lucky share from dominating future distributions.
+            uint256 maxCredit = totalIntegratedDifficulty / MAX_SHARE_CREDIT_DIVISOR;
+            credit = targetDifficulty < maxCredit ? targetDifficulty : maxCredit;
+            // Edge case: if pool is empty or very small, credit = targetDifficulty
+            if (maxCredit == 0) credit = targetDifficulty;
+            valid = true;
+        } else {
+            // Invalid share (didn't meet target): credit = current average.
+            // This rewards participation even when the target was missed.
+            // Average = totalIntegratedDifficulty / totalShareCount
+            if (totalShareCount > 0) {
+                credit = totalIntegratedDifficulty / totalShareCount;
+            } else {
+                // Pool is empty — first share ever. Give a small base credit.
+                credit = 1;
+            }
+            valid = false;
+        }
+
+        // --- Update state ---
+
+        // Pool total gets the FULL actual difficulty (uncapped).
+        // This means lucky mega-shares boost the pool average for everyone.
+        totalIntegratedDifficulty += actualDifficulty;
+        totalShareCount += 1;
+
+        // Update player's cumulative score checkpoint.
+        // If the player already has a checkpoint for today, it gets updated (not duplicated).
+        uint256 previousScore = _playerScores[playerId].upperLookup(today);
+        _playerScores[playerId].push(today, previousScore + credit);
+
+        // Update pool-wide cumulative score checkpoint.
+        uint256 previousPoolScore = _poolScores.upperLookup(today);
+        _poolScores.push(today, previousPoolScore + credit);
+
+        // Update counter tracking
+        lastShareCounter[playerId][dayNumber] = counter;
+        hasSubmittedOnDay[playerId][dayNumber] = true;
+
+        // Lazy-mint PlayerNFT on first ever submission (idempotent)
+        playerNFT.mintIfNeeded(msg.sender);
+
+        emit ShareSubmitted(
+            playerId,
+            today, // recorded under submission day
+            counter,
+            salt,
+            actualDifficulty,
+            targetDifficulty,
+            credit,
+            valid
+        );
+    }
+
+    // =========================================================================
+    //                          VIEW FUNCTIONS
+    // =========================================================================
+
+    /// @notice Get a player's cumulative score at a given day.
+    ///         Used by currency contracts to calculate proportional token distribution.
+    ///         Returns the score at the most recent checkpoint at or before the given day.
+    /// @param playerId The player's ID (= uint256(uint160(walletAddress)))
+    /// @param day The day to look up
+    /// @return The cumulative score at that day (0 if no shares submitted by then)
+    function getPlayerScoreAt(uint256 playerId, uint256 day) external view returns (uint256) {
+        return _playerScores[playerId].upperLookup(day);
+    }
+
+    /// @notice Get the pool-wide cumulative score at a given day.
+    ///         Used alongside getPlayerScoreAt to calculate proportional shares.
+    /// @param day The day to look up
+    /// @return The pool-wide cumulative score at that day
+    function getPoolScoreAt(uint256 day) external view returns (uint256) {
+        return _poolScores.upperLookup(day);
+    }
+
+    /// @notice Calculate the current day number based on block.timestamp.
+    ///         Day 0 = deployment day. Each day is 24 hours (86400 seconds).
+    /// @return The current day number
+    function getCurrentDay() public view returns (uint256) {
+        return (block.timestamp - dayZeroTimestamp) / 1 days;
+    }
+
+    /// @notice Compute the initCodeHash for off-chain mining.
+    ///         The initCodeHash is fixed for a given (player, day, difficulty, counter).
+    ///         Players compute this once per counter, then iterate over salt values:
+    ///           initCodeHash = getInitCodeHash(me, day, difficulty, counter)
+    ///           for salt in range:
+    ///             hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
+    ///             if leadingZeros(hash) >= targetDifficulty: submit(counter, salt)
+    ///
+    /// @param player The player's wallet address
+    /// @param dayNumber The day number being mined
+    /// @param targetDifficulty The difficulty target
+    /// @param counter The share submission index (committed in initCode)
+    /// @return The initCodeHash to use in CREATE2 hash computation
+    function getInitCodeHash(
+        address player,
+        uint256 dayNumber,
+        uint256 targetDifficulty,
+        uint256 counter
+    ) public pure returns (bytes32) {
+        uint256 playerId = uint256(uint160(player));
+        return keccak256(abi.encodePacked(
+            type(CurrencyToken).creationCode,
+            abi.encode(playerId, dayNumber, targetDifficulty, counter)
+        ));
+    }
+
+    /// @notice Get the current pool statistics.
+    /// @return _totalShares Total number of shares submitted
+    /// @return _totalDifficulty Total integrated difficulty (uncapped)
+    /// @return _currentDay Current day number
+    /// @return _averageDifficulty Current average difficulty per share (0 if no shares)
+    function getPoolStats()
+        external
+        view
+        returns (
+            uint256 _totalShares,
+            uint256 _totalDifficulty,
+            uint256 _currentDay,
+            uint256 _averageDifficulty
+        )
+    {
+        _totalShares = totalShareCount;
+        _totalDifficulty = totalIntegratedDifficulty;
+        _currentDay = getCurrentDay();
+        _averageDifficulty = totalShareCount > 0
+            ? totalIntegratedDifficulty / totalShareCount
+            : 0;
+    }
+
+    // =========================================================================
+    //                    CURRENCY REGISTRATION & DEPLOYMENT
+    // =========================================================================
+
+    /// @notice Register a discovered vanity address as a CurrencyNFT.
+    ///
+    ///         When a player finds a (counter, salt) pair that produces an address
+    ///         with an interesting pattern (0xBadFace, 0xDeadBeef, etc.), they call
+    ///         this function to claim it. The contract recomputes the CREATE2 address
+    ///         and mints a CurrencyNFT storing all params needed for later deployment.
+    ///
+    ///         The NFT grants the right to later deploy a CurrencyToken at that address.
+    ///         The dayNumber determines which historical score snapshot is used for
+    ///         token distribution — discoverers can choose any past day with a valid hash.
+    ///
+    /// @param counter The share index (part of initCode, defines the address space)
+    /// @param salt The CREATE2 salt (the search variable that produced the vanity address)
+    /// @param dayNumber The day to anchor this discovery to (must have a valid hash)
+    /// @param targetDifficulty The difficulty target used during search
+    /// @return vanityAddress The computed vanity address (also determines the NFT tokenId)
+    function registerCurrency(
+        uint256 counter,
+        bytes32 salt,
+        uint256 dayNumber,
+        uint256 targetDifficulty
+    ) external returns (address vanityAddress) {
+        if (block.chainid != deployChainId) revert WrongChain();
+        if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
+
+        uint256 playerId = uint256(uint160(msg.sender));
+
+        // Compute the CREATE2 address — counter is in the initCode, salt is the CREATE2 salt
+        bytes32 initCodeHash = keccak256(abi.encodePacked(
+            type(CurrencyToken).creationCode,
+            abi.encode(playerId, dayNumber, targetDifficulty, counter)
+        ));
+
+        bytes32 create2Hash = keccak256(abi.encodePacked(
+            bytes1(0xff),
+            address(this),
+            salt,
+            initCodeHash
+        ));
+
+        // The CREATE2 address is the last 20 bytes of the hash
+        vanityAddress = address(uint160(uint256(create2Hash)));
+        uint256 currencyId = uint256(uint160(vanityAddress));
+
+        // Revert if already registered (ERC721 _mint would revert too, but clearer error)
+        if (currencyNFT.isRegistered(vanityAddress)) revert CurrencyAlreadyRegistered();
+
+        // Mint the CurrencyNFT to the discoverer — stores both counter and salt
+        currencyNFT.mint(
+            msg.sender,
+            currencyId,
+            counter,
+            salt,
+            playerId,
+            dayNumber,
+            targetDifficulty
+        );
+
+        emit CurrencyRegistered(playerId, vanityAddress, dayNumber, counter);
+    }
+
+    /// @notice Deploy a CurrencyToken at a previously registered vanity address.
+    ///
+    ///         Only the current CurrencyNFT owner can call this. Uses CREATE2 with
+    ///         the stored parameters to deploy the token at the exact vanity address.
+    ///         The totalSupply is chosen by the deployer at this point — it was
+    ///         intentionally excluded from the CREATE2 hash so this choice can be
+    ///         deferred to deployment time.
+    ///
+    /// @param vanityAddress The vanity address to deploy at (must be registered)
+    /// @return token The deployed CurrencyToken contract
+    function deployCurrency(address vanityAddress) external returns (CurrencyToken token) {
+        uint256 currencyId = uint256(uint160(vanityAddress));
+
+        // Verify the currency is registered and not yet deployed
+        CurrencyNFT.CurrencyDiscovery memory disc = currencyNFT.getDiscovery(currencyId);
+        if (disc.playerId == 0 && disc.dayNumber == 0) revert CurrencyNotRegistered();
+        if (disc.deployed) revert CurrencyAlreadyDeployed();
+
+        // Only the NFT owner can deploy
+        if (currencyNFT.ownerOf(currencyId) != msg.sender) revert NotCurrencyOwner();
+
+        // Deploy via CREATE2 — Solidity's `new ... {salt: ...}` compiles to CREATE2.
+        // The resulting address MUST match vanityAddress because we use the same
+        // factory (this), salt, and initCode (CurrencyToken bytecode + constructor args).
+        // The counter is a constructor param (in initCode), salt is the CREATE2 salt.
+        token = new CurrencyToken{salt: disc.salt}(
+            disc.playerId,
+            disc.dayNumber,
+            disc.targetDifficulty,
+            disc.counter
+        );
+
+        // Sanity check: deployed address must match the registered vanity address
+        assert(address(token) == vanityAddress);
+
+        // Mark as deployed in the NFT
+        currencyNFT.markDeployed(currencyId);
+
+        emit CurrencyDeployed(vanityAddress, address(token));
+    }
+
+    /// @notice Compute the vanity address for a given set of CREATE2 parameters.
+    ///         Useful for off-chain tools to verify an address before registering.
+    /// @param player The player's wallet address
+    /// @param counter The share index (part of initCode)
+    /// @param salt The CREATE2 salt (the search variable)
+    /// @param dayNumber The day number
+    /// @param targetDifficulty The difficulty target
+    /// @return The resulting CREATE2 address
+    function computeVanityAddress(
+        address player,
+        uint256 counter,
+        bytes32 salt,
+        uint256 dayNumber,
+        uint256 targetDifficulty
+    ) external view returns (address) {
+        bytes32 initCodeHash = getInitCodeHash(player, dayNumber, targetDifficulty, counter);
+        bytes32 create2Hash = keccak256(abi.encodePacked(
+            bytes1(0xff),
+            address(this),
+            salt,
+            initCodeHash
+        ));
+        return address(uint160(uint256(create2Hash)));
+    }
+
+    // =========================================================================
+    //                          INTERNAL FUNCTIONS
+    // =========================================================================
+
+    /// @notice Advance to a new day: snapshot the previous day's state and publish
+    ///         the new day's hash. Called automatically on first submission of a new day.
+    ///
+    ///         O(1) regardless of gap size. If no submissions happened for days 4-7,
+    ///         those days simply have no hash (dayHashes[d] == 0) and no shares can
+    ///         reference them. Checkpoints bridge the gap automatically — lookups for
+    ///         skipped days return the last stored value.
+    ///
+    /// @param newDay The day number to advance to
+    function _advanceDay(uint256 newDay) internal {
+        // Snapshot the ending day's pool-wide state.
+        // This freezes the running totals so currency minting can read historical state.
+        daySnapshots[currentDay] = DaySnapshot({
+            totalShareCount: totalShareCount,
+            totalIntegratedDifficulty: totalIntegratedDifficulty
+        });
+
+        // Publish ONLY the new day's hash. Skipped days get no hash — you can't
+        // submit shares for them, but that's fine since nobody was mining those days.
+        bytes32 newDayHash = keccak256(abi.encodePacked(
+            block.chainid,
+            address(this),
+            block.prevrandao,
+            newDay
+        ));
+        dayHashes[newDay] = newDayHash;
+
+        currentDay = newDay;
+
+        emit DayAdvanced(newDay, newDayHash);
+    }
+}
