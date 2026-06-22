@@ -61,13 +61,13 @@ One entity creates 1000 wallets, tries different target difficulties from each, 
 ### Why It Doesn't Work
 The wallet address (= playerId) is baked into the initCode, which feeds the CREATE2 address:
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter))
+initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash))
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
 Different wallets produce completely different initCodeHashes — and therefore completely different addresses — from the same salt. The attacker must compute separate hashes for each wallet. This doesn't save work — it just parallelizes it, which is equivalent to using one wallet with more compute.
 
-The pre-committed difficulty is also baked into initCode, so you can't compute one hash and retroactively attribute it to whichever wallet's target it happens to meet.
+The pre-committed difficulty is also baked into initCode, so you can't compute one hash and retroactively attribute it to whichever wallet's target it happens to meet. The dayHash further anchors computation to a specific day's on-chain randomness.
 
 ### Verdict
 **Not a viable attack.** The hash construction prevents it by design.
@@ -104,7 +104,7 @@ Player A broadcasts a `registerCurrency` transaction. Player B sees it in the me
 ### Analysis
 The CREATE2 address depends on:
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter))
+initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash))
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
@@ -291,6 +291,7 @@ With same-day discovery (dayHash from today):
 | **1% per-share cap** | Single lucky share dominating pool |
 | **Full difficulty to pool total** | Socializes luck, boosts average for all |
 | **Discoverer playerId in initCode** | Front-running discoveries |
+| **dayHash in initCode** | Pre-computing shares for future days |
 | **Minimum share difficulty threshold** | Spam/griefing, average reward exploitation |
 | **Chain + contract lock in hash** | Cross-chain replay, fork replay |
 | **Bootstrap pre-seeding + decay** | Cold-start manipulation |

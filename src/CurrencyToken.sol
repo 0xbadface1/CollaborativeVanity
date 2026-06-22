@@ -18,6 +18,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 ///     - dayNumber: when it was discovered (anchors to a time window)
 ///     - targetDifficulty: the difficulty bet (prevents retroactive difficulty changes)
 ///     - counter: the share submission index (strictly increasing per player per day)
+///     - dayHash: on-chain daily randomness (prevents pre-computing shares for future days)
 ///
 ///   The salt (CREATE2 salt) is the FREE search variable — iterated rapidly off-chain.
 ///   The counter is COMMITTED in the initCode — changing it changes the address space.
@@ -51,6 +52,12 @@ contract CurrencyToken is ERC20 {
     ///         player per day, enforced by MiningPool.
     uint256 public immutable counter;
 
+    /// @notice The day hash — on-chain randomness anchoring this share to a specific day.
+    ///         Derived from block.prevrandao and published by MiningPool on the first
+    ///         submission of each new day. Prevents players from pre-computing shares
+    ///         for future days, since the dayHash is unknowable until that day begins.
+    bytes32 public immutable dayHash;
+
     /// @notice The MiningPool that deployed this token (msg.sender during CREATE2).
     ///         Only the pool can call mint().
     address public immutable miningPool;
@@ -61,16 +68,19 @@ contract CurrencyToken is ERC20 {
     /// @param _dayNumber The discovery day number
     /// @param _targetDifficulty The difficulty target used during mining
     /// @param _counter The share counter (part of initCode, affects address space)
+    /// @param _dayHash The on-chain daily randomness (prevents pre-computation for future days)
     constructor(
         uint256 _playerId,
         uint256 _dayNumber,
         uint256 _targetDifficulty,
-        uint256 _counter
+        uint256 _counter,
+        bytes32 _dayHash
     ) ERC20("Vanity Currency", "VANITY") {
         playerId = _playerId;
         dayNumber = _dayNumber;
         targetDifficulty = _targetDifficulty;
         counter = _counter;
+        dayHash = _dayHash;
         miningPool = msg.sender;
     }
 

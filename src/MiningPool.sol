@@ -30,8 +30,9 @@ import {CurrencyNFT} from "./CurrencyNFT.sol";
 ///   Where:
 ///     - factory = this contract's address
 ///     - salt = free search variable (bytes32, iterated rapidly off-chain)
-///     - initCode = token bytecode + abi.encode(playerId, dayNumber, targetDifficulty, counter)
+///     - initCode = token bytecode + abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash)
 ///     - counter = share submission index (strictly increasing, committed in initCode)
+///     - dayHash = on-chain daily randomness (prevents pre-computing shares for future days)
 ///
 /// PRE-COMMITTED DIFFICULTY (anti-Sybil):
 ///   Each player declares a target difficulty BEFORE computing. This target is
@@ -214,7 +215,7 @@ contract MiningPool {
     ///   1. Pick a targetDifficulty — how many leading zero bits you're "betting" on
     ///   2. Pick a dayNumber — use the current day (getCurrentDay())
     ///   3. Pick a counter — must be > your last submitted counter for this day
-    ///   4. Get the initCodeHash from getInitCodeHash(yourAddress, dayNumber, targetDifficulty, counter)
+    ///   4. Get the initCodeHash from getInitCodeHash(yourAddress, dayNumber, targetDifficulty, counter, dayHash)
     ///   5. Search over salt values:
     ///      For each salt, compute:
     ///        hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
@@ -261,11 +262,13 @@ contract MiningPool {
         }
 
         // --- Compute the CREATE2 hash on-chain ---
-        // initCodeHash includes the counter (committed per submission).
+        // initCodeHash includes the counter (committed per submission) and dayHash
+        // (on-chain randomness preventing pre-computation for future days).
         // salt is the free search variable the player iterated over.
+        bytes32 dayHash = dayHashes[dayNumber];
         bytes32 initCodeHash = keccak256(abi.encodePacked(
             type(CurrencyToken).creationCode,
-            abi.encode(playerId, dayNumber, targetDifficulty, counter)
+            abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash)
         ));
 
         bytes32 create2Hash = keccak256(abi.encodePacked(
@@ -370,29 +373,50 @@ contract MiningPool {
         return (block.timestamp - dayZeroTimestamp) / 1 days;
     }
 
+    /// @notice Publish the current day's hash if it hasn't been published yet.
+    ///         Anyone can call this — no share submission required. This resolves
+    ///         the bootstrap problem: players need the dayHash to compute shares
+    ///         (it's part of initCode), but previously it was only published on
+    ///         the first share submission of each day.
+    ///         Cheap to call, idempotent (no-op if already current).
+    function publishDayHash() external {
+        if (block.chainid != deployChainId) revert WrongChain();
+        uint256 today = getCurrentDay();
+        if (today > currentDay) {
+            _advanceDay(today);
+        }
+    }
+
     /// @notice Compute the initCodeHash for off-chain mining.
-    ///         The initCodeHash is fixed for a given (player, day, difficulty, counter).
+    ///         The initCodeHash is fixed for a given (player, day, difficulty, counter, dayHash).
     ///         Players compute this once per counter, then iterate over salt values:
-    ///           initCodeHash = getInitCodeHash(me, day, difficulty, counter)
+    ///           initCodeHash = getInitCodeHash(me, day, difficulty, counter, dayHash)
     ///           for salt in range:
     ///             hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
     ///             if leadingZeros(hash) >= targetDifficulty: submit(counter, salt)
+    ///
+    ///         The dayHash parameter is the on-chain daily randomness from dayHashes[dayNumber].
+    ///         It prevents players from pre-computing shares for future days, since the
+    ///         dayHash is unknowable until publishDayHash() or the first submission triggers its publication.
+    ///         Callers must look up the dayHash themselves (this function stays pure).
     ///
     /// @param player The player's wallet address
     /// @param dayNumber The day number being mined
     /// @param targetDifficulty The difficulty target
     /// @param counter The share submission index (committed in initCode)
+    /// @param dayHash The on-chain daily randomness for the given day
     /// @return The initCodeHash to use in CREATE2 hash computation
     function getInitCodeHash(
         address player,
         uint256 dayNumber,
         uint256 targetDifficulty,
-        uint256 counter
+        uint256 counter,
+        bytes32 dayHash
     ) public pure returns (bytes32) {
         uint256 playerId = uint256(uint160(player));
         return keccak256(abi.encodePacked(
             type(CurrencyToken).creationCode,
-            abi.encode(playerId, dayNumber, targetDifficulty, counter)
+            abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash)
         ));
     }
 
@@ -449,11 +473,12 @@ contract MiningPool {
         if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
 
         uint256 playerId = uint256(uint160(msg.sender));
+        bytes32 dayHash = dayHashes[dayNumber];
 
-        // Compute the CREATE2 address — counter is in the initCode, salt is the CREATE2 salt
+        // Compute the CREATE2 address — counter and dayHash are in the initCode, salt is the CREATE2 salt
         bytes32 initCodeHash = keccak256(abi.encodePacked(
             type(CurrencyToken).creationCode,
-            abi.encode(playerId, dayNumber, targetDifficulty, counter)
+            abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash)
         ));
 
         bytes32 create2Hash = keccak256(abi.encodePacked(
@@ -470,7 +495,7 @@ contract MiningPool {
         // Revert if already registered (ERC721 _mint would revert too, but clearer error)
         if (currencyNFT.isRegistered(vanityAddress)) revert CurrencyAlreadyRegistered();
 
-        // Mint the CurrencyNFT to the discoverer — stores both counter and salt
+        // Mint the CurrencyNFT to the discoverer — stores counter, salt, and dayHash
         currencyNFT.mint(
             msg.sender,
             currencyId,
@@ -478,7 +503,8 @@ contract MiningPool {
             salt,
             playerId,
             dayNumber,
-            targetDifficulty
+            targetDifficulty,
+            dayHash
         );
 
         emit CurrencyRegistered(playerId, vanityAddress, dayNumber, counter);
@@ -508,12 +534,13 @@ contract MiningPool {
         // Deploy via CREATE2 — Solidity's `new ... {salt: ...}` compiles to CREATE2.
         // The resulting address MUST match vanityAddress because we use the same
         // factory (this), salt, and initCode (CurrencyToken bytecode + constructor args).
-        // The counter is a constructor param (in initCode), salt is the CREATE2 salt.
+        // The counter and dayHash are constructor params (in initCode), salt is the CREATE2 salt.
         token = new CurrencyToken{salt: disc.salt}(
             disc.playerId,
             disc.dayNumber,
             disc.targetDifficulty,
-            disc.counter
+            disc.counter,
+            disc.dayHash
         );
 
         // Sanity check: deployed address must match the registered vanity address
@@ -532,15 +559,17 @@ contract MiningPool {
     /// @param salt The CREATE2 salt (the search variable)
     /// @param dayNumber The day number
     /// @param targetDifficulty The difficulty target
+    /// @param dayHash The on-chain daily randomness for the given day
     /// @return The resulting CREATE2 address
     function computeVanityAddress(
         address player,
         uint256 counter,
         bytes32 salt,
         uint256 dayNumber,
-        uint256 targetDifficulty
+        uint256 targetDifficulty,
+        bytes32 dayHash
     ) external view returns (address) {
-        bytes32 initCodeHash = getInitCodeHash(player, dayNumber, targetDifficulty, counter);
+        bytes32 initCodeHash = getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
         bytes32 create2Hash = keccak256(abi.encodePacked(
             bytes1(0xff),
             address(this),

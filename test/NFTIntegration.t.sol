@@ -40,7 +40,8 @@ contract NFTIntegrationTest is Test {
         uint256 counter,
         uint256 startSalt
     ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
-        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter);
+        bytes32 dayHash = pool.dayHashes(dayNumber);
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
         address poolAddr = address(pool);
         uint256 minDiff = pool.MIN_SHARE_DIFFICULTY();
 
@@ -164,14 +165,16 @@ contract NFTIntegrationTest is Test {
         assertEq(disc.playerId, uint256(uint160(player1)));
         assertEq(disc.dayNumber, dayNumber);
         assertEq(disc.targetDifficulty, targetDifficulty);
+        assertEq(disc.dayHash, pool.dayHashes(dayNumber), "dayHash should match pool's day hash");
         assertFalse(disc.deployed);
     }
 
     function test_registerCurrency_matchesComputeVanityAddress() public {
         uint256 counter = 3;
         bytes32 salt = bytes32(uint256(42));
+        bytes32 dayHash = pool.dayHashes(0);
 
-        address expected = pool.computeVanityAddress(player1, counter, salt, 0, 16);
+        address expected = pool.computeVanityAddress(player1, counter, salt, 0, 16, dayHash);
 
         vm.prank(player1);
         address actual = pool.registerCurrency(counter, salt, 0, 16);
@@ -234,6 +237,7 @@ contract NFTIntegrationTest is Test {
         assertEq(token.dayNumber(), 0);
         assertEq(token.targetDifficulty(), 16);
         assertEq(token.counter(), 0);
+        assertEq(token.dayHash(), pool.dayHashes(0), "Deployed token should store the day hash");
         assertEq(token.miningPool(), address(pool));
     }
 

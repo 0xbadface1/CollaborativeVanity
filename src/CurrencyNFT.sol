@@ -28,7 +28,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 ///
 ///   These params fully determine the vanity address:
 ///     address = CREATE2(factory=MiningPool, salt=salt,
-///               initCode=CurrencyToken(playerId, dayNumber, targetDifficulty, counter))
+///               initCode=CurrencyToken(playerId, dayNumber, targetDifficulty, counter, dayHash))
 ///
 /// LIFECYCLE:
 ///   1. Player discovers vanity address (off-chain search)
@@ -49,6 +49,7 @@ contract CurrencyNFT is ERC721 {
         uint256 playerId;         // discoverer's player ID
         uint256 dayNumber;        // day of discovery (score snapshot anchor)
         uint256 targetDifficulty; // difficulty target used during search
+        bytes32 dayHash;          // on-chain daily randomness (prevents pre-computation)
         bool deployed;            // true after CurrencyToken has been deployed
     }
 
@@ -74,6 +75,7 @@ contract CurrencyNFT is ERC721 {
     /// @param playerId The discoverer's player ID
     /// @param dayNumber The day of discovery
     /// @param targetDifficulty The difficulty target used
+    /// @param dayHash The on-chain daily randomness for the discovery day
     function mint(
         address to,
         uint256 tokenId,
@@ -81,7 +83,8 @@ contract CurrencyNFT is ERC721 {
         bytes32 salt,
         uint256 playerId,
         uint256 dayNumber,
-        uint256 targetDifficulty
+        uint256 targetDifficulty,
+        bytes32 dayHash
     ) external {
         if (msg.sender != miningPool) revert OnlyMiningPool();
 
@@ -91,6 +94,7 @@ contract CurrencyNFT is ERC721 {
             playerId: playerId,
             dayNumber: dayNumber,
             targetDifficulty: targetDifficulty,
+            dayHash: dayHash,
             deployed: false
         });
 

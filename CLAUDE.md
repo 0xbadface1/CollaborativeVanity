@@ -46,13 +46,14 @@ Author: **Tristan Badface** (0xbadface.eth)
 The share hash IS the CREATE2 address computation. Every hash attempt simultaneously searches for leading zeros (share difficulty) and vanity patterns (currency discovery).
 
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode || abi.encode(playerId, dayNumber, targetDifficulty, counter))
+initCodeHash = keccak256(CurrencyToken.creationCode || abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash))
 address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 ```
 
 **Counter vs Salt — critical distinction:**
 - `counter` is in initCode (constructor param). Defines WHICH address space to search. Strictly increasing per player per day. Changing counter = entirely different 2^256 search space.
 - `salt` is the CREATE2 salt. The FREE search variable iterated billions of times off-chain. No ordering constraint.
+- `dayHash` is in initCode (constructor param). On-chain daily randomness that prevents pre-computing shares for future days. Published via `publishDayHash()` or automatically on each day's first submission.
 
 The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is embedded in MiningPool at compile time. No setter or external loading needed.
 
@@ -79,12 +80,12 @@ The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` �
 
 ## Tests
 
-Three test suites, 72 tests total, all in `test/`:
+Three test suites, 76 tests total, all in `test/`:
 
 | Suite | Tests | Coverage |
 |---|---|---|
 | `LeadingZeros.t.sol` | 11 | Unit + fuzz (1000 runs) against naive implementation |
-| `MiningPool.t.sol` | 39 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock |
+| `MiningPool.t.sol` | 43 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, publishDayHash |
 | `NFTIntegration.t.sol` | 22 | PlayerNFT, CurrencyNFT, registration, deployment, full mine-register-deploy flow |
 
 Run: `~/.foundry/bin/forge test`
@@ -124,7 +125,7 @@ This codebase doubles as a Foundry learning resource. Add thorough documentation
 ## Implementation Status
 
 ### Phase 1: Core System — COMPLETE
-All contracts, 72 tests passing.
+All contracts, 76 tests passing.
 
 ### Phase 2: Token Distribution — NEXT
 - Mint logic in CurrencyToken that reads player/pool scores from MiningPool
@@ -166,7 +167,9 @@ These were discussed and decided. Context preserved here so future sessions don'
 
 6. **DaySnapshot uses uint256 (not uint128).** Compiler warnings about safe casts were not worth the negligible storage savings.
 
-7. **`getInitCodeHash` is `pure` not `view`.** Only uses `type(CurrencyToken).creationCode` which is a compile-time constant.
+7. **`getInitCodeHash` is `pure` not `view`.** Only uses `type(CurrencyToken).creationCode` which is a compile-time constant. Caller passes dayHash explicitly rather than the function looking it up from storage.
+
+8. **dayHash in initCode (not salt).** The unpredictable daily on-chain randomness is included as a CurrencyToken constructor param (in initCode), not mixed into the CREATE2 salt. This makes it explicit and consistent with the pattern of all committed values living in initCode. Prevents pre-computing shares for future days.
 
 ---
 

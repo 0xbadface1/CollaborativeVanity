@@ -52,6 +52,9 @@ contract MiningPoolTest is Test {
     ///         Uses free-memory-pointer reset trick to avoid MemoryOOG — without it,
     ///         each abi.encodePacked allocates new memory, and ~65K iterations would
     ///         consume tens of MB (EVM memory cost is quadratic).
+    ///
+    ///         Looks up the dayHash from the pool. For days whose hash hasn't been
+    ///         published yet (future days), use the overload that accepts an explicit dayHash.
     function _findValidSalt(
         address player,
         uint256 dayNumber,
@@ -59,7 +62,22 @@ contract MiningPoolTest is Test {
         uint256 counter,
         uint256 startSalt
     ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
-        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter);
+        bytes32 dayHash = pool.dayHashes(dayNumber);
+        return _findValidSaltWithDayHash(player, dayNumber, targetDifficulty, counter, startSalt, dayHash);
+    }
+
+    /// @notice Overload that accepts an explicit dayHash. Used when testing submissions
+    ///         on a day whose hash hasn't been published yet — the caller precomputes
+    ///         the expected dayHash using the same formula as MiningPool._advanceDay().
+    function _findValidSaltWithDayHash(
+        address player,
+        uint256 dayNumber,
+        uint256 targetDifficulty,
+        uint256 counter,
+        uint256 startSalt,
+        bytes32 dayHash
+    ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
         address poolAddr = address(pool);
         uint256 minDiff = pool.MIN_SHARE_DIFFICULTY();
 
@@ -88,15 +106,35 @@ contract MiningPoolTest is Test {
         revert("_findValidSalt: exhausted search space");
     }
 
+    /// @notice Precompute the dayHash that MiningPool._advanceDay() will publish
+    ///         for a given day. Uses the same formula: keccak256(chainId, pool, prevrandao, day).
+    ///         Useful for finding valid salts BEFORE the day has been advanced on-chain.
+    function _precomputeDayHash(uint256 dayNumber) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked(
+            block.chainid,
+            address(pool),
+            block.prevrandao,
+            dayNumber
+        ));
+    }
+
     /// @notice Submit a valid share as a given player. Convenience wrapper.
+    ///         If the dayHash for the given day hasn't been published yet (e.g. when
+    ///         submitting on a new day that triggers _advanceDay), this automatically
+    ///         precomputes the expected dayHash using _precomputeDayHash().
     function _submitValidShare(
         address player,
         uint256 dayNumber,
         uint256 targetDifficulty,
         uint256 counter
     ) internal returns (bytes32 salt, uint256 actualDifficulty) {
-        (salt, actualDifficulty) = _findValidSalt(
-            player, dayNumber, targetDifficulty, counter, 0
+        bytes32 dayHash = pool.dayHashes(dayNumber);
+        if (dayHash == bytes32(0)) {
+            // Day hash not published yet — precompute what _advanceDay will produce.
+            dayHash = _precomputeDayHash(dayNumber);
+        }
+        (salt, actualDifficulty) = _findValidSaltWithDayHash(
+            player, dayNumber, targetDifficulty, counter, 0, dayHash
         );
         vm.prank(player);
         pool.submitShare(targetDifficulty, dayNumber, counter, salt);
@@ -185,7 +223,8 @@ contract MiningPoolTest is Test {
 
     function test_submitShare_anySaltWithValidCounter() public {
         // Salt is free — player can use any bytes32 value
-        bytes32 initCodeHash = pool.getInitCodeHash(player1, 0, 16, 0);
+        bytes32 dayHash = pool.dayHashes(0);
+        bytes32 initCodeHash = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
 
         // Search for a valid salt starting from a large offset
         (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 5_000_000);
@@ -461,43 +500,104 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     function test_getInitCodeHash_deterministic() public view {
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 0);
+        bytes32 dayHash = pool.dayHashes(0);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
         assertEq(hash1, hash2);
     }
 
     function test_getInitCodeHash_differentPlayers() public view {
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0);
-        bytes32 hash2 = pool.getInitCodeHash(player2, 0, 16, 0);
+        bytes32 dayHash = pool.dayHashes(0);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player2, 0, 16, 0, dayHash);
         assertTrue(hash1 != hash2, "Different players should get different initCodeHashes");
     }
 
     function test_getInitCodeHash_differentDays() public view {
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 1, 16, 0);
+        // Different day numbers produce different initCodeHashes even with the same dayHash,
+        // because dayNumber itself is encoded. In practice, different days also have
+        // different dayHashes, further differentiating them.
+        bytes32 dayHash = pool.dayHashes(0);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 1, 16, 0, dayHash);
         assertTrue(hash1 != hash2, "Different days should get different initCodeHashes");
     }
 
     function test_getInitCodeHash_differentDifficulties() public view {
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 32, 0);
+        bytes32 dayHash = pool.dayHashes(0);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 32, 0, dayHash);
         assertTrue(hash1 != hash2, "Different difficulties should get different initCodeHashes");
     }
 
     function test_getInitCodeHash_differentCounters() public view {
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 1);
+        bytes32 dayHash = pool.dayHashes(0);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 1, dayHash);
         assertTrue(hash1 != hash2, "Different counters should get different initCodeHashes");
+    }
+
+    function test_getInitCodeHash_differentDayHashes() public view {
+        // Same player, day, difficulty, and counter — but different dayHash values.
+        // This is the core of the pre-computation prevention: without knowing
+        // the dayHash, a player cannot predict the initCodeHash for a future day.
+        bytes32 dayHash1 = pool.dayHashes(0);
+        bytes32 dayHash2 = keccak256("different day hash");
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash1);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash2);
+        assertTrue(hash1 != hash2, "Different dayHashes should get different initCodeHashes");
     }
 
     function test_getInitCodeHash_matchesManualComputation() public view {
         uint256 playerId = uint256(uint160(player1));
+        bytes32 dayHash = pool.dayHashes(0);
         bytes32 expected = keccak256(abi.encodePacked(
             type(CurrencyToken).creationCode,
-            abi.encode(playerId, uint256(0), uint256(16), uint256(0))
+            abi.encode(playerId, uint256(0), uint256(16), uint256(0), dayHash)
         ));
-        bytes32 actual = pool.getInitCodeHash(player1, 0, 16, 0);
+        bytes32 actual = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
         assertEq(actual, expected, "Should match manual computation");
+    }
+
+    // =========================================================================
+    //                    getPoolStats TESTS
+    // =========================================================================
+
+    // =========================================================================
+    //                    publishDayHash TESTS
+    // =========================================================================
+
+    function test_publishDayHash_advancesDay() public {
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
+        assertEq(pool.currentDay(), 0, "Day should not advance until triggered");
+
+        pool.publishDayHash();
+
+        assertEq(pool.currentDay(), 1);
+        assertTrue(pool.dayHashes(1) != bytes32(0), "Day 1 hash should be published");
+    }
+
+    function test_publishDayHash_idempotent() public {
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
+        pool.publishDayHash();
+        bytes32 dayHash = pool.dayHashes(1);
+
+        pool.publishDayHash();
+        assertEq(pool.dayHashes(1), dayHash, "Hash should not change on second call");
+        assertEq(pool.currentDay(), 1);
+    }
+
+    function test_publishDayHash_enablesMining() public {
+        // Advance to day 1 via publishDayHash (no share submission needed)
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
+        pool.publishDayHash();
+
+        bytes32 dayHash = pool.dayHashes(1);
+        assertTrue(dayHash != bytes32(0), "Day hash should be available");
+
+        // Now mine using the published dayHash
+        _submitValidShare(player1, 1, 16, 0);
+        assertEq(pool.totalShareCount(), 1, "Should accept share on published day");
     }
 
     // =========================================================================

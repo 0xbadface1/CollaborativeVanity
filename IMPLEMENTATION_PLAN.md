@@ -76,7 +76,7 @@ The share hash IS the CREATE2 address computation. Every hash attempt simultaneo
 
 ```
 initCodeHash = keccak256(
-    CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter)
+    CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash)
 )
 
 CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
@@ -90,17 +90,19 @@ CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 | `dayNumber` | initCode | Time anchor | Must have valid dayHash |
 | `targetDifficulty` | initCode | Pre-committed difficulty bet | Anti-Sybil: can't retroactively lower |
 | `counter` | initCode | Share submission index | Strictly increasing per player per day |
+| `dayHash` | initCode | On-chain daily randomness | Prevents pre-computing shares for future days |
 | `salt` | CREATE2 salt | Free search variable | No constraint — iterated billions of times |
 
-The counter defines WHICH address space to search. The salt searches WITHIN that space. Changing the counter changes the initCodeHash, producing an entirely different 2^256-sized search space.
+The counter defines WHICH address space to search. The salt searches WITHIN that space. Changing the counter changes the initCodeHash, producing an entirely different 2^256-sized search space. The dayHash ensures shares can only be computed after a day's randomness is published.
 
 ### Off-chain mining workflow
 
 1. Pick `targetDifficulty`, `dayNumber`, `counter` (must be > last submitted)
-2. Compute `initCodeHash = getInitCodeHash(me, day, difficulty, counter)` — fixed per counter
-3. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`
-4. If `leadingZeros(hash) >= targetDifficulty`: submit `(counter, salt)` pair
-5. If the address is also "interesting" (vanity pattern): register as currency
+2. Look up `dayHash = dayHashes(dayNumber)` — must be non-zero (day must exist)
+3. Compute `initCodeHash = getInitCodeHash(me, day, difficulty, counter, dayHash)` — fixed per counter
+4. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`
+5. If `leadingZeros(hash) >= targetDifficulty`: submit `(counter, salt)` pair
+6. If the address is also "interesting" (vanity pattern): register as currency
 
 The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is baked into MiningPool at compile time. No setter or external loading needed. Any change to CurrencyToken automatically updates all hash computations on recompile.
 
@@ -138,15 +140,16 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 - `deployCurrency(vanityAddress)` → CREATE2 deploys CurrencyToken, only by NFT owner
 - `getPlayerScoreAt(playerId, day)` → checkpoint binary search
 - `getPoolScoreAt(day)` → pool-wide checkpoint binary search
-- `getInitCodeHash(player, day, difficulty, counter)` → for off-chain mining
-- `computeVanityAddress(player, counter, salt, day, difficulty)` → verify before registering
+- `getInitCodeHash(player, day, difficulty, counter, dayHash)` → for off-chain mining
+- `computeVanityAddress(player, counter, salt, day, difficulty, dayHash)` → verify before registering
+- `publishDayHash()` → publish current day's hash without submitting a share (resolves dayHash bootstrap)
 
 ### CurrencyToken (ERC-20)
 
 Deployed via CREATE2 at discovered vanity addresses.
 
 **Constructor params** (affect the CREATE2 address):
-- `playerId`, `dayNumber`, `targetDifficulty`, `counter`
+- `playerId`, `dayNumber`, `targetDifficulty`, `counter`, `dayHash`
 
 **NOT in constructor** (chosen at deployment time):
 - `totalSupply` — via `mint()` function after deployment
@@ -225,14 +228,14 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 
 - [x] Foundry project setup, OpenZeppelin installed
 - [x] `LeadingZeros.sol` — leading zero bit counter
-- [x] `CurrencyToken.sol` — minimal ERC-20 with CREATE2 constructor params
+- [x] `CurrencyToken.sol` — minimal ERC-20 with CREATE2 constructor params (incl. dayHash)
 - [x] `PlayerNFT.sol` — lazy minting, address-as-tokenId
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
 - [x] `LeadingZeros.t.sol` — 11 tests including fuzz test against naive implementation
-- [x] `MiningPool.t.sol` — 39 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock
+- [x] `MiningPool.t.sol` — 43 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, publishDayHash
 - [x] `NFTIntegration.t.sol` — 22 tests covering PlayerNFT, CurrencyNFT, registration, deployment, full flow
-- [x] 72 tests total, all passing
+- [x] 76 tests total, all passing
 
 ### Phase 2: Token Distribution (NEXT)
 
