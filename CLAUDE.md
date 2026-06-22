@@ -132,6 +132,7 @@ All contracts, 76 tests passing.
 - 1% discoverer reward + 99% proportional distribution to all players
 - Total supply chosen by CurrencyNFT holder at deployment time
 - Player claim function (each player calls to receive their share)
+- Auto-boost pool on currency deployment: add vanity address difficulty to totalIntegratedDifficulty (not totalShareCount) so discoveries can't be withheld from the pool. Double-counting with prior share submission is intentional — it's a gift to the commons.
 
 ### Phase 3: Polish & Edge Cases
 - Bootstrap mechanism for empty pool (pre-seed values, decay — needs MC simulation)
@@ -188,3 +189,7 @@ These were discussed and decided. Context preserved here so future sessions don'
 6. **CurrencyNFT as pre-deployment marketplace.** NFTs are transferable before deployment. Selling the NFT transfers deployment rights + discoverer reward. This creates a speculative market for vanity addresses. Not a bug — it's a feature — but the economic implications are worth thinking about.
 
 7. **Off-chain mining client.** Not started. The on-chain contracts define the protocol; a GPU mining client (CUDA/OpenCL) would be needed for practical use. The off-chain workflow is documented in MiningPool.sol NatSpec.
+
+8. **Third-party share submission.** Allow anyone to submit shares on behalf of a player (`submitShareFor(address player, ...)`), with the player's address still in initCode. Useful for relay services / gasless mining. Players opt in by default, can disable if griefed (attacker could submit counter=max to block submissions). Per-day counters limit griefing damage to one day. Needs an opt-in/out flag per player.
+
+9. **Per-day counters (not global).** The counter resets each day. This is intentional — a global counter would make the max-counter griefing attack (see #8) permanent instead of bounded to one day. The extra storage slot per (player, day) is worth the safety.

@@ -243,6 +243,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [ ] 1% discoverer reward + 99% proportional distribution
 - [ ] Total supply chosen by CurrencyNFT holder at deployment time
 - [ ] Player claim function (each player calls to receive their share)
+- [ ] Auto-boost pool on currency deployment — add vanity address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [ ] Integration tests for full mint flow
 
 ### Phase 3: Polish & Edge Cases
