@@ -30,6 +30,8 @@ contract TokenDistributionTest is Test {
 
     uint256 public constant DISTRIBUTION_SUPPLY = 1_000_000 ether;
     uint256 public constant SECOND_DISTRIBUTION_SUPPLY = 2_500_000 ether;
+    uint256 internal mockPlayerScore;
+    uint256 internal mockPoolScore;
 
     function setUp() public {
         player1 = makeAddr("player1");
@@ -157,6 +159,16 @@ contract TokenDistributionTest is Test {
         bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
         bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(pool), salt, initCodeHash));
         return create2Hash.countLeadingZeroBits();
+    }
+
+    /// @notice Mock MiningPool score read for directly deployed CurrencyToken tests.
+    function getPlayerScoreAt(uint256, uint256) external view returns (uint256) {
+        return mockPlayerScore;
+    }
+
+    /// @notice Mock MiningPool score read for directly deployed CurrencyToken tests.
+    function getPoolScoreAt(uint256) external view returns (uint256) {
+        return mockPoolScore;
     }
 
     // =========================================================================
@@ -336,6 +348,24 @@ contract TokenDistributionTest is Test {
 
         assertEq(token.balanceOf(player1), claimed, "tokens mint to PlayerNFT owner");
         assertEq(token.balanceOf(player3), 0, "caller receives nothing");
+    }
+
+    function test_claim_usesFullPrecisionMulDivForLargeValues() public {
+        _submitDay0Share(player1, 0);
+        uint256 playerId = uint256(uint160(player1));
+        uint256 hugeSupply = type(uint256).max / 99;
+        mockPlayerScore = 1 << 200;
+        mockPoolScore = mockPlayerScore;
+
+        CurrencyToken token = new CurrencyToken(playerId, 0, 16, 0, pool.dayHashes(0));
+        token.initializeDistribution(hugeSupply);
+
+        uint256 expectedProportional = hugeSupply * 99 / 100;
+        uint256 expectedBonus = hugeSupply / 100;
+        uint256 claimed = token.claim(playerId);
+
+        assertEq(claimed, expectedProportional + expectedBonus);
+        assertEq(token.balanceOf(player1), claimed);
     }
 
     // =========================================================================

@@ -250,8 +250,8 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] Player claim function (each player calls to receive their share)
 - [x] Auto-boost pool on currency deployment — add registered address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [x] Integration tests for full mint flow
-- [x] `TokenDistribution.t.sol` — 17 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
-- [x] 97 tests total, all passing
+- [x] `TokenDistribution.t.sol` — 18 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
+- [x] 98 tests total, all passing
 
 ### Phase 3: Polish & Edge Cases
 

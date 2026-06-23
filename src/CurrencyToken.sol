@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @notice Minimal interface CurrencyToken uses to read historical scores from MiningPool.
 /// @dev Kept in this file instead of importing MiningPool to avoid a circular dependency:
@@ -192,7 +193,8 @@ contract CurrencyToken is ERC20 {
         if (claimed[claimPlayerId]) revert AlreadyClaimed(claimPlayerId);
 
         uint256 playerScore = IMiningPool(miningPool).getPlayerScoreAt(claimPlayerId, snapshotDay);
-        uint256 proportionalAmount = distributionSupply * 99 * playerScore / (100 * poolScoreAtSnapshot);
+        uint256 poolAllocation = Math.mulDiv(distributionSupply, 99, 100);
+        uint256 proportionalAmount = Math.mulDiv(poolAllocation, playerScore, poolScoreAtSnapshot);
         uint256 discovererBonus = claimPlayerId == playerId ? distributionSupply / 100 : 0;
         amount = proportionalAmount + discovererBonus;
 
