@@ -254,6 +254,11 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [ ] Minimum share difficulty calibration vs Base gas costs
 - [ ] Share expiration (practical concern, TBD)
 - [ ] Gas optimization
+  - [ ] Use `upperLookupRecent` instead of `upperLookup` in submitShare (2 lookups per call, always recent keys)
+  - [ ] creationCode CODECOPY gas (~3-6K per submitShare) — investigate assembly-level optimization
+- [ ] Move `getCurrentDayHash()` out of "VIEW FUNCTIONS" section (it modifies state)
+- [ ] Add explicit `player == address(0)` revert in submitShare and registerCurrency (currently relies on downstream ERC721 revert with non-descriptive error)
+- [ ] Consider `require` instead of `assert` in deployCurrency line 558 (assert consumes all gas on failure)
 
 ### Phase 4: BountyEscrow (optional)
 
