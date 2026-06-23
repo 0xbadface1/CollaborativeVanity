@@ -442,20 +442,26 @@ contract MiningPool {
     /// @notice Register a discovered vanity address as a CurrencyNFT.
     ///
     ///         When a player finds a (counter, salt) pair that produces an address
-    ///         with an interesting pattern (0xBadFace, 0xDeadBeef, etc.), they call
-    ///         this function to claim it. The contract recomputes the CREATE2 address
-    ///         and mints a CurrencyNFT storing all params needed for later deployment.
+    ///         with an interesting pattern (0xBadFace, 0xDeadBeef, etc.), anyone can
+    ///         call this function to register it. The contract recomputes the CREATE2
+    ///         address and mints a CurrencyNFT to the player committed in the hash.
+    ///
+    ///         The caller does not need to be the player — third-party registration
+    ///         is safe because the NFT is always minted to the address embedded in
+    ///         the CREATE2 computation, not to msg.sender.
     ///
     ///         The NFT grants the right to later deploy a CurrencyToken at that address.
     ///         The dayNumber determines which historical score snapshot is used for
     ///         token distribution — discoverers can choose any past day with a valid hash.
     ///
+    /// @param player The player whose address is committed in the CREATE2 hash
     /// @param counter The share index (part of initCode, defines the address space)
     /// @param salt The CREATE2 salt (the search variable that produced the vanity address)
     /// @param dayNumber The day to anchor this discovery to (must have a valid hash)
     /// @param targetDifficulty The difficulty target used during search
     /// @return vanityAddress The computed vanity address (also determines the NFT tokenId)
     function registerCurrency(
+        address player,
         uint256 counter,
         bytes32 salt,
         uint256 dayNumber,
@@ -463,7 +469,7 @@ contract MiningPool {
     ) external returns (address vanityAddress) {
         if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
 
-        uint256 playerId = uint256(uint160(msg.sender));
+        uint256 playerId = uint256(uint160(player));
         bytes32 dayHash = dayHashes[dayNumber];
 
         // Compute the CREATE2 address — counter and dayHash are in the initCode, salt is the CREATE2 salt
@@ -486,9 +492,15 @@ contract MiningPool {
         // Revert if already registered (ERC721 _mint would revert too, but clearer error)
         if (currencyNFT.isRegistered(vanityAddress)) revert CurrencyAlreadyRegistered();
 
-        // Mint the CurrencyNFT to the discoverer — stores counter, salt, and dayHash
+        // Ensure PlayerNFT exists (lazy-mint if this player never submitted a share)
+        playerNFT.mintIfNeeded(player);
+
+        // Mint the CurrencyNFT to whoever currently owns the PlayerNFT —
+        // the PlayerNFT is the bearer instrument for the player's identity,
+        // so if it was transferred, the new owner receives the discovery.
+        address nftOwner = playerNFT.ownerOf(playerId);
         currencyNFT.mint(
-            msg.sender,
+            nftOwner,
             currencyId,
             counter,
             salt,
