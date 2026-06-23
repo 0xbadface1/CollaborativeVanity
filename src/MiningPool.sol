@@ -477,7 +477,9 @@ contract MiningPool {
     ///
     ///         The NFT grants the right to later deploy a CurrencyToken at that address.
     ///         The dayNumber determines which historical score snapshot is used for
-    ///         token distribution — discoverers can choose any past day with a valid hash.
+    ///         token distribution. Discoverers can choose any past day with a valid hash
+    ///         before mining; the current day is the default behavior. This choice is
+    ///         committed into the CREATE2 address, so it cannot be changed ex-post.
     ///
     /// @param player The player whose address is committed in the CREATE2 hash
     /// @param counter The share index (part of initCode, defines the address space)

@@ -52,7 +52,7 @@ forge test --gas-report  # with gas reporting
 
 **Phase 2 (Token Distribution)** — Complete. Mint logic, 1%/99% distribution, player claims.
 
-Current test suite: 96 tests passing.
+Current test suite: 97 tests passing.
 
 See `IMPLEMENTATION_PLAN.md` for full roadmap and `GAME_THEORY_ANALYSIS.md` for attack scenario analysis.
 

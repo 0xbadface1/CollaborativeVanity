@@ -547,6 +547,20 @@ contract MiningPoolTest is Test {
         assertTrue(hash1 != hash2, "Different dayHashes should get different initCodeHashes");
     }
 
+    function test_computeVanityAddress_dayChoiceCommittedInAddress() public {
+        bytes32 salt = bytes32(uint256(42));
+        bytes32 day0Hash = pool.dayHashes(0);
+
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
+        pool.getCurrentDayHash();
+        bytes32 day1Hash = pool.dayHashes(1);
+
+        address day0Address = pool.computeVanityAddress(player1, 0, salt, 0, 16, day0Hash);
+        address day1Address = pool.computeVanityAddress(player1, 0, salt, 1, 16, day1Hash);
+
+        assertTrue(day0Address != day1Address, "Changing the day changes the CREATE2 address");
+    }
+
     function test_getInitCodeHash_matchesManualComputation() public view {
         uint256 playerId = uint256(uint160(player1));
         bytes32 dayHash = pool.dayHashes(0);
