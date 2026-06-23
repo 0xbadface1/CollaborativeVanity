@@ -21,7 +21,7 @@ interface IPlayerNFT {
 }
 
 /// @title CurrencyToken
-/// @notice ERC-20 meme currency deployed at a vanity CREATE2 address.
+/// @notice ERC-20 meme currency deployed at a registered CREATE2 address.
 ///
 /// WHY THESE SPECIFIC CONSTRUCTOR PARAMS:
 ///   The CREATE2 address is determined by:
@@ -29,10 +29,10 @@ interface IPlayerNFT {
 ///
 ///   initCode = this contract's creation bytecode + abi.encode(constructor args)
 ///
-///   So the constructor params directly affect the vanity address.
+///   So the constructor params directly affect the currency address.
 ///   We include exactly the params that define the mining context:
-///     - playerId: who discovered this address (also prevents replay across players)
-///     - dayNumber: when it was discovered (anchors to a time window)
+///     - playerId: who registered this address (also prevents replay across players)
+///     - dayNumber: day committed into the CREATE2 address (anchors to a time window)
 ///     - targetDifficulty: the difficulty bet (prevents retroactive difficulty changes)
 ///     - counter: the share submission index (strictly increasing per player per day)
 ///     - dayHash: on-chain daily randomness (prevents pre-computing shares for future days)
@@ -45,22 +45,22 @@ interface IPlayerNFT {
 ///   agree on supply during the search phase.
 ///
 /// DEPLOYMENT FLOW:
-///   1. Player discovers a vanity address during mining (off-chain search)
+///   1. Player chooses a hash result to treat as a currency address
 ///   2. Player registers it as a CurrencyNFT (on-chain)
 ///   3. CurrencyNFT holder calls deploy() on MiningPool, which uses CREATE2
 ///   4. MiningPool initializes the chosen distribution supply
 ///   5. PlayerNFT owners call claim() to mint their share
 ///   5. Supply split: 1% to discoverer, 99% proportional to all players' scores
 contract CurrencyToken is ERC20 {
-    /// @notice The player who discovered this vanity address.
+    /// @notice The player who registered this currency address.
     ///         Stored as uint256(uint160(playerWalletAddress)).
     uint256 public immutable playerId;
 
-    /// @notice The day number when this currency was discovered.
+    /// @notice The day committed into this currency's CREATE2 address.
     ///         Used to look up historical player/pool scores for distribution.
     uint256 public immutable dayNumber;
 
-    /// @notice The target difficulty the discoverer was mining at.
+    /// @notice The target difficulty committed into this address space.
     ///         Baked into the hash to prevent retroactive difficulty changes.
     uint256 public immutable targetDifficulty;
 

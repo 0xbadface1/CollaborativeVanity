@@ -32,8 +32,8 @@ CollaborativeVanity/
 ├── src/
 │   ├── MiningPool.sol              # Central contract — shares, scores, day management,
 │   │                               #   currency registration & deployment, NFT deployment
-│   ├── CurrencyToken.sol           # ERC-20 deployed at vanity CREATE2 address
-│   ├── CurrencyNFT.sol             # Discovered vanity addresses as tradeable NFTs
+│   ├── CurrencyToken.sol           # ERC-20 deployed at registered CREATE2 address
+│   ├── CurrencyNFT.sol             # Registered currency addresses as tradeable NFTs
 │   ├── PlayerNFT.sol               # Player identity as transferable NFT
 │   └── libraries/
 │       └── LeadingZeros.sol        # Leading zero bit counter (difficulty measurement)
@@ -69,9 +69,9 @@ CollaborativeVanity/
 
 ## CREATE2 Architecture
 
-The share hash IS the CREATE2 address computation. Every hash attempt simultaneously searches for:
+The share hash IS the CREATE2 address computation. Every hash attempt simultaneously produces:
 - Leading zeros → share difficulty (proof of work)
-- Vanity patterns → currency discovery (e.g. 0xBadFace...)
+- A currency address → optionally vanity, but not judged on-chain
 
 ### Formula
 
@@ -103,7 +103,7 @@ The counter defines WHICH address space to search. The salt searches WITHIN that
 3. Compute `initCodeHash = getInitCodeHash(me, day, difficulty, counter, dayHash)` — fixed per counter
 4. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`
 5. If `leadingZeros(hash) >= targetDifficulty`: submit `(counter, salt)` pair
-6. If the address is also "interesting" (vanity pattern): register as currency
+6. If you want that hash to become a coin: register its address as a currency
 
 The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is baked into MiningPool at compile time. No setter or external loading needed. Any change to CurrencyToken automatically updates all hash computations on recompile.
 
@@ -147,7 +147,7 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 
 ### CurrencyToken (ERC-20)
 
-Deployed via CREATE2 at discovered vanity addresses.
+Deployed via CREATE2 at registered currency addresses.
 
 **Constructor params** (affect the CREATE2 address):
 - `playerId`, `dayNumber`, `targetDifficulty`, `counter`, `dayHash`
@@ -165,21 +165,21 @@ Deployed via CREATE2 at discovered vanity addresses.
 
 ### CurrencyNFT (ERC-721)
 
-Discovered vanity addresses as tradeable NFTs.
+Registered currency addresses as tradeable NFTs.
 
 **TokenId** = `uint256(uint160(vanityAddress))`
 
 **Stored per discovery:**
 - `counter` — share index (in initCode)
 - `salt` — CREATE2 salt (found off-chain)
-- `playerId` — discoverer
-- `dayNumber` — discovery day (score snapshot anchor)
+- `playerId` — registering player
+- `dayNumber` — day committed into the CREATE2 address (score snapshot anchor)
 - `targetDifficulty` — difficulty target
 - `deployed` — whether CurrencyToken has been deployed
 
 **Lifecycle:**
-1. Player discovers vanity address → calls `MiningPool.registerCurrency()` → NFT minted
-2. NFT holder calls `MiningPool.deployCurrency(vanityAddress, totalSupply)` → CurrencyToken deployed at vanity address
+1. Player chooses a hash result as a currency address → calls `MiningPool.registerCurrency()` → NFT minted
+2. NFT holder calls `MiningPool.deployCurrency(vanityAddress, totalSupply)` → CurrencyToken deployed at that address
 3. NFT becomes souvenir / proof of provenance
 
 Transferable — selling the NFT transfers deployment rights. PlayerNFT ownership controls claim recipients for historical player score rights.
@@ -248,7 +248,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] 1% discoverer reward + 99% proportional distribution
 - [x] Total supply chosen by CurrencyNFT holder at deployment time
 - [x] Player claim function (each player calls to receive their share)
-- [x] Auto-boost pool on currency deployment — add vanity address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
+- [x] Auto-boost pool on currency deployment — add registered address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [x] Integration tests for full mint flow
 - [x] `TokenDistribution.t.sol` — 17 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
 - [x] 96 tests total, all passing

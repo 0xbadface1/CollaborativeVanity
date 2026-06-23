@@ -15,14 +15,14 @@ import {CurrencyNFT} from "./CurrencyNFT.sol";
 ///   Each share proves computational effort. The contract tracks each player's
 ///   cumulative contribution over time using checkpoints (day → cumulative score).
 ///
-///   When a player later discovers a vanity address (a currency), the token
-///   distribution is proportional to each player's score at the day before discovery.
+///   Every hash also defines a potential currency address. When someone registers
+///   one, the token distribution follows the historical score snapshot rules.
 ///
 /// HOW SHARES WORK:
 ///   The share hash IS the CREATE2 address computation. Every hash attempt
-///   simultaneously searches for:
+///   simultaneously produces:
 ///     1. Leading zeros → share difficulty (proof of work)
-///     2. Vanity patterns → potential currency discovery (e.g. 0xBadFace...)
+///     2. A potential currency address → subjective/social coin discovery
 ///
 ///   The CREATE2 formula:
 ///     address = keccak256(0xff ‖ factory ‖ salt ‖ keccak256(initCode))[12:]
@@ -139,7 +139,7 @@ contract MiningPool {
     PlayerNFT public immutable playerNFT;
 
     /// @notice The CurrencyNFT contract. Deployed by this contract's constructor.
-    ///         Minted when a player registers a vanity address discovery.
+    ///         Minted when a player registers a currency address.
     CurrencyNFT public immutable currencyNFT;
 
     // =========================================================================
@@ -464,27 +464,30 @@ contract MiningPool {
     //                    CURRENCY REGISTRATION & DEPLOYMENT
     // =========================================================================
 
-    /// @notice Register a discovered vanity address as a CurrencyNFT.
+    /// @notice Register a CREATE2 address as a CurrencyNFT.
     ///
-    ///         When a player finds a (counter, salt) pair that produces an address
-    ///         with an interesting pattern (0xBadFace, 0xDeadBeef, etc.), anyone can
-    ///         call this function to register it. The contract recomputes the CREATE2
-    ///         address and mints a CurrencyNFT to the player committed in the hash.
+    ///         Every (counter, salt) pair produces an address that can become a
+    ///         currency. The contract intentionally does not judge whether that
+    ///         address is "vanity", aesthetically good, or otherwise worthy.
+    ///         Anyone can call this function to register the computed CREATE2
+    ///         address as a CurrencyNFT for the player committed in the hash.
     ///
     ///         The caller does not need to be the player — third-party registration
     ///         is safe because the NFT is always minted to the address embedded in
     ///         the CREATE2 computation, not to msg.sender.
     ///
     ///         The NFT grants the right to later deploy a CurrencyToken at that address.
-    ///         The dayNumber determines which historical score snapshot is used for
-    ///         token distribution — discoverers can choose any past day with a valid hash.
+    ///         The deployer receives the 1% discoverer bonus; the remaining supply is
+    ///         shared with prior share contributors according to the protocol snapshot.
+    ///         The dayNumber is part of the CREATE2 address and determines the score
+    ///         snapshot used for token distribution.
     ///
     /// @param player The player whose address is committed in the CREATE2 hash
     /// @param counter The share index (part of initCode, defines the address space)
-    /// @param salt The CREATE2 salt (the search variable that produced the vanity address)
-    /// @param dayNumber The day to anchor this discovery to (must have a valid hash)
+    /// @param salt The CREATE2 salt (the search variable that produced the currency address)
+    /// @param dayNumber The day committed into the CREATE2 address (must have a valid hash)
     /// @param targetDifficulty The difficulty target used during search
-    /// @return vanityAddress The computed vanity address (also determines the NFT tokenId)
+    /// @return vanityAddress The computed currency address (also determines the NFT tokenId)
     function registerCurrency(
         address player,
         uint256 counter,
@@ -538,10 +541,10 @@ contract MiningPool {
         emit CurrencyRegistered(playerId, vanityAddress, dayNumber, counter);
     }
 
-    /// @notice Deploy a CurrencyToken at a previously registered vanity address.
+    /// @notice Deploy a CurrencyToken at a previously registered currency address.
     ///
     ///         Only the current CurrencyNFT owner can call this. Uses CREATE2 with
-    ///         the stored parameters to deploy the token at the exact vanity address.
+    ///         the stored parameters to deploy the token at the exact registered address.
     ///         The totalSupply is chosen by the deployer at this point — it was
     ///         intentionally excluded from the CREATE2 hash so this choice can be
     ///         deferred to deployment time.
@@ -551,12 +554,12 @@ contract MiningPool {
     ///         guarantees no player can add more shares to the distribution window.
     ///
     ///         The function also auto-boosts totalIntegratedDifficulty by the actual
-    ///         leading-zero difficulty of the vanity address. This boost affects only
+    ///         leading-zero difficulty of the registered address. This boost affects only
     ///         the running difficulty total, not share count and not score checkpoints.
-    ///         If the discoverer previously submitted the same work as a share, this
+    ///         If the registering player previously submitted the same work as a share, this
     ///         intentionally double-counts as a gift to the commons.
     ///
-    /// @param vanityAddress The vanity address to deploy at (must be registered)
+    /// @param vanityAddress The currency address to deploy at (must be registered)
     /// @param totalSupply Total ERC-20 supply available for player claims
     /// @return token The deployed CurrencyToken contract
     function deployCurrency(address vanityAddress, uint256 totalSupply) external returns (CurrencyToken token) {
@@ -602,7 +605,7 @@ contract MiningPool {
             disc.dayHash
         );
 
-        // Sanity check: deployed address must match the registered vanity address
+        // Sanity check: deployed address must match the registered currency address
         assert(address(token) == vanityAddress);
 
         token.initializeDistribution(totalSupply);
@@ -617,7 +620,7 @@ contract MiningPool {
         emit CurrencyDeployed(vanityAddress, address(token), totalSupply, vanityDifficulty);
     }
 
-    /// @notice Compute the vanity address for a given set of CREATE2 parameters.
+    /// @notice Compute the currency address for a given set of CREATE2 parameters.
     ///         Useful for off-chain tools to verify an address before registering.
     /// @param player The player's wallet address
     /// @param counter The share index (part of initCode)

@@ -11,7 +11,7 @@ The system has several properties that interact in non-obvious ways:
 - **Shares recorded under submission day** — the dayHash in the seed only determines currency discovery day
 - **Pre-committed difficulty** — target baked into the hash, can't be changed after computation
 - **Dual accounting** — player credit is capped, pool total gets full difficulty
-- **Any share can become a currency** — the dayHash determines discovery day D, distribution uses scores at D-1
+- **Any hash can become a currency** — address quality is subjective; distributions follow the protocol's historical snapshot rules
 - **NFT identities** — tokenId = wallet address, transferable
 
 Each property was designed to close specific attack vectors. This document traces those vectors.
@@ -39,7 +39,7 @@ A player could still accumulate compute offline and submit a large batch on a si
 ## 2. Currency Backdating Attack
 
 ### The Attack
-A player discovers a vanity address and registers it using an old dayHash (say from 30 days ago), trying to cherry-pick a past day where their relative pool share was highest.
+A player chooses a hash result as a currency and registers it with an older published dayHash, trying to cherry-pick a past day where their relative pool share was highest.
 
 ### Analysis
 The discovery uses a dayHash, which determines the "discovery day" D. Distribution uses all players' cumulative scores at day D-1.
@@ -108,12 +108,12 @@ initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, day
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
-**This is prevented by design.** The discoverer's playerId (= wallet address) is baked into the initCode constructor params. A different player using the same salt and counter produces a completely different initCodeHash — and therefore a different address. The vanity pattern won't match.
+**This is prevented by design.** The registering player's playerId (= wallet address) is baked into the initCode constructor params. A different player using the same salt and counter produces a completely different initCodeHash — and therefore a different address.
 
-Note: `submitShare` and `registerCurrency` accept the player address as an explicit parameter (enabling third-party/gasless submission), but front-running is still impossible — the vanity address is cryptographically bound to the original player's address, so an attacker substituting their own address produces a different (non-vanity) result. The CurrencyNFT is always minted to the current owner of the player's PlayerNFT, not to the caller.
+Note: `submitShare` and `registerCurrency` accept the player address as an explicit parameter (enabling third-party/gasless submission), but front-running is still impossible — the registered address is cryptographically bound to the original player's address, so an attacker substituting their own address produces a different result. The CurrencyNFT is always minted to the current owner of the player's PlayerNFT, not to the caller.
 
 ### Verdict
-**Prevented by the discoverer's address being cryptographically bound to the initCode.** The protection comes from the CREATE2 hash construction, not from access control.
+**Prevented by the registering player's address being cryptographically bound to the initCode.** The protection comes from the CREATE2 hash construction, not from access control.
 
 ---
 
@@ -245,7 +245,7 @@ Base forks. Both chains initially have chainid 8453. Shares valid on one chain a
 ## 11. The "Mining for Yourself" Closed Loop
 
 ### The Scenario
-A big player owns 80% of pool shares, discovers a currency, and gets 1% discoverer reward + ~79% of remaining supply = ~80% total. Is this a problem?
+A big player owns 80% of pool shares, registers a currency, and gets 1% discoverer reward + ~79% of remaining supply = ~80% total. Is this a problem?
 
 ### Analysis
 No — the player invested proportionally more compute and earned proportionally more. The system's protections ensure this dominance comes from sustained legitimate work, not a single lucky hit (which is capped).

@@ -2,7 +2,7 @@
 
 First implementation of the collaborative vanity address mining system from the **"Capturing and Distributing Cryptographic Luck"** paper (Section 4).
 
-Players submit proof-of-work shares (leading zero bits in CREATE2 addresses) to an on-chain MiningPool on Base (Ethereum L2). When a vanity address is discovered, a meme currency token is deployed there with supply distributed proportionally to contributing players.
+Players submit proof-of-work shares (leading zero bits in CREATE2 addresses) to an on-chain MiningPool on Base (Ethereum L2). Every hash is also a potential currency: anyone can register the resulting CREATE2 address and deploy an ERC-20 there, taking a 1% discoverer bonus while sharing the rest with contributors according to the protocol's snapshot rules.
 
 **Author:** Tristan Badface (0xbadface.eth)
 
@@ -10,9 +10,9 @@ Players submit proof-of-work shares (leading zero bits in CREATE2 addresses) to 
 
 ## How It Works
 
-Every hash attempt simultaneously searches for two things:
+Every hash attempt simultaneously produces two things:
 1. **Leading zeros** — proof of work (share difficulty)
-2. **Vanity patterns** — interesting addresses like `0xBadFace...` or `0xDeadBeef...`
+2. **A currency address** — maybe visually interesting, maybe not; the contract does not judge
 
 The share hash IS the CREATE2 address computation:
 
@@ -23,16 +23,16 @@ address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 
 Players pre-commit to a difficulty target (baked into the hash), preventing cherry-picking of lucky results. Valid shares are credited at the target difficulty (capped at 1% of pool). Invalid shares still earn the pool average, capped by the same 1% per-share ceiling — rewarding participation without bypassing the cap.
 
-When someone discovers a vanity address, they register it as a CurrencyNFT and can later deploy an ERC-20 token at that exact address. Token supply is distributed proportionally to all players based on their accumulated scores.
+When someone wants to turn a hash into a currency, they register it as a CurrencyNFT and can later deploy an ERC-20 token at that exact address. The "vanity" part is social and optional: people can completely ignore address aesthetics and use this infrastructure to deploy a coin whose supply is distributed across prior share contributors.
 
 ## Contracts
 
 | Contract | Role |
 |---|---|
 | `MiningPool.sol` | Central contract. Share submission, scoring, day management, currency registration & deployment. |
-| `CurrencyToken.sol` | ERC-20 deployed at vanity CREATE2 addresses. |
+| `CurrencyToken.sol` | ERC-20 deployed at registered CREATE2 addresses. |
 | `PlayerNFT.sol` | ERC-721 player identity. Lazy minted on first share. Transferable — sells your mining history. |
-| `CurrencyNFT.sol` | ERC-721 for discovered vanity addresses. Grants deployment rights + discoverer reward. |
+| `CurrencyNFT.sol` | ERC-721 for registered currency addresses. Grants deployment rights + discoverer reward. |
 | `LeadingZeros.sol` | Binary search leading zero bit counter. |
 
 ## Build & Test
