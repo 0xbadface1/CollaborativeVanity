@@ -20,6 +20,7 @@ contract NFTIntegrationTest is Test {
 
     address public player1;
     address public player2;
+    uint256 public constant DISTRIBUTION_SUPPLY = 1_000_000 ether;
 
     function setUp() public {
         player1 = makeAddr("player1");
@@ -260,8 +261,9 @@ contract NFTIntegrationTest is Test {
         bytes32 salt = bytes32(uint256(500));
         address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
 
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
-        CurrencyToken token = pool.deployCurrency(vanity);
+        CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
         assertEq(address(token), vanity);
         assertEq(token.playerId(), uint256(uint160(player1)));
@@ -270,14 +272,18 @@ contract NFTIntegrationTest is Test {
         assertEq(token.counter(), 0);
         assertEq(token.dayHash(), pool.dayHashes(0), "Deployed token should store the day hash");
         assertEq(token.miningPool(), address(pool));
+        assertEq(token.distributionSupply(), DISTRIBUTION_SUPPLY);
+        assertEq(token.snapshotDay(), 0);
+        assertTrue(token.initialized(), "Distribution should be initialized during deployment");
     }
 
     function test_deployCurrency_markedAsDeployed() public {
         bytes32 salt = bytes32(uint256(500));
         address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
 
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
-        pool.deployCurrency(vanity);
+        pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
         uint256 tokenId = uint256(uint160(vanity));
         CurrencyNFT.CurrencyDiscovery memory disc = currencyNFT.getDiscovery(tokenId);
@@ -289,10 +295,11 @@ contract NFTIntegrationTest is Test {
         address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
 
         vm.expectEmit(true, false, false, false);
-        emit MiningPool.CurrencyDeployed(vanity, address(0));
+        emit MiningPool.CurrencyDeployed(vanity, address(0), 0, 0);
 
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
-        pool.deployCurrency(vanity);
+        pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
     }
 
     function test_deployCurrency_byNftTransferRecipient() public {
@@ -303,8 +310,9 @@ contract NFTIntegrationTest is Test {
         vm.prank(player1);
         currencyNFT.transferFrom(player1, player2, tokenId);
 
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player2);
-        CurrencyToken token = pool.deployCurrency(vanity);
+        CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
         assertEq(address(token), vanity);
     }
@@ -313,27 +321,29 @@ contract NFTIntegrationTest is Test {
         bytes32 salt = bytes32(uint256(500));
         address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
 
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player2);
         vm.expectRevert(MiningPool.NotCurrencyOwner.selector);
-        pool.deployCurrency(vanity);
+        pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
     }
 
     function testRevert_deployCurrency_alreadyDeployed() public {
         bytes32 salt = bytes32(uint256(500));
         address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
 
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
-        pool.deployCurrency(vanity);
+        pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
         vm.prank(player1);
         vm.expectRevert(MiningPool.CurrencyAlreadyDeployed.selector);
-        pool.deployCurrency(vanity);
+        pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
     }
 
     function testRevert_deployCurrency_notRegistered() public {
         vm.prank(player1);
         vm.expectRevert(MiningPool.CurrencyNotRegistered.selector);
-        pool.deployCurrency(address(0x1234));
+        pool.deployCurrency(address(0x1234), DISTRIBUTION_SUPPLY);
     }
 
     // =========================================================================
@@ -351,8 +361,9 @@ contract NFTIntegrationTest is Test {
         assertTrue(currencyNFT.isRegistered(vanity), "Currency should be registered");
 
         // 3. Player deploys the CurrencyToken at the vanity address
+        vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
-        CurrencyToken token = pool.deployCurrency(vanity);
+        CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
         // Verify the full chain
         assertEq(address(token), vanity, "Token deployed at vanity address");

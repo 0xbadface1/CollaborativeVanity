@@ -450,7 +450,7 @@ contract MiningPoolTest is Test {
         uint256 p1Score = pool.getPlayerScoreAt(id1, 0);
         uint256 p2Score = pool.getPlayerScoreAt(id2, 0);
 
-        assertEq(poolScore, p1Score + p2Score, "Pool score = sum of player scores");
+        assertEq(poolScore, p1Score + p2Score + 1, "Pool score = player scores plus bootstrap");
     }
 
     function test_checkpoints_lookupSkippedDayReturnsPrevious() public {

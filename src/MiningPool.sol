@@ -159,7 +159,9 @@ contract MiningPool {
 
     event CurrencyDeployed(
         address indexed vanityAddress,
-        address indexed tokenContract
+        address indexed tokenContract,
+        uint256 totalSupply,
+        uint256 vanityDifficulty
     );
 
     // =========================================================================
@@ -174,6 +176,8 @@ contract MiningPool {
     error CurrencyAlreadyDeployed();
     error NotCurrencyOwner();
     error CurrencyNotRegistered();
+    error DistributionSnapshotNotFrozen(uint256 snapshotDay, uint256 currentDay);
+    error ZeroTotalSupply();
 
     // =========================================================================
     //                          CONSTRUCTOR
@@ -188,6 +192,12 @@ contract MiningPool {
     constructor(uint256 expectedChainId) {
         if (block.chainid != expectedChainId) revert WrongChain(expectedChainId, block.chainid);
         dayZeroTimestamp = block.timestamp;
+
+        // Bootstrap the pool score with a tiny denominator so day-0 discoveries
+        // can initialize distribution safely before organic pool history exists.
+        // This is intentionally score-only: running share and difficulty totals
+        // still start at zero.
+        _poolScores.push(0, 1);
 
         // Deploy NFT contracts — they store address(this) as their authorized minter
         playerNFT = new PlayerNFT();
@@ -529,9 +539,20 @@ contract MiningPool {
     ///         intentionally excluded from the CREATE2 hash so this choice can be
     ///         deferred to deployment time.
     ///
+    ///         Distribution uses the day before discovery as its score snapshot.
+    ///         Deployment is only allowed after that snapshot day has passed, which
+    ///         guarantees no player can add more shares to the distribution window.
+    ///
+    ///         The function also auto-boosts totalIntegratedDifficulty by the actual
+    ///         leading-zero difficulty of the vanity address. This boost affects only
+    ///         the running difficulty total, not share count and not score checkpoints.
+    ///         If the discoverer previously submitted the same work as a share, this
+    ///         intentionally double-counts as a gift to the commons.
+    ///
     /// @param vanityAddress The vanity address to deploy at (must be registered)
+    /// @param totalSupply Total ERC-20 supply available for player claims
     /// @return token The deployed CurrencyToken contract
-    function deployCurrency(address vanityAddress) external returns (CurrencyToken token) {
+    function deployCurrency(address vanityAddress, uint256 totalSupply) external returns (CurrencyToken token) {
         uint256 currencyId = uint256(uint160(vanityAddress));
 
         // Verify the currency is registered and not yet deployed
@@ -539,8 +560,28 @@ contract MiningPool {
         if (disc.playerId == 0 && disc.dayNumber == 0) revert CurrencyNotRegistered();
         if (disc.deployed) revert CurrencyAlreadyDeployed();
 
+        uint256 snapshotDay = disc.dayNumber > 0 ? disc.dayNumber - 1 : 0;
+        uint256 today = getCurrentDay();
+        if (today <= snapshotDay) revert DistributionSnapshotNotFrozen(snapshotDay, today);
+
         // Only the NFT owner can deploy
         if (currencyNFT.ownerOf(currencyId) != msg.sender) revert NotCurrencyOwner();
+        if (totalSupply == 0) revert ZeroTotalSupply();
+
+        bytes32 initCodeHash = getInitCodeHash(
+            address(uint160(disc.playerId)),
+            disc.dayNumber,
+            disc.targetDifficulty,
+            disc.counter,
+            disc.dayHash
+        );
+        bytes32 create2Hash = keccak256(abi.encodePacked(
+            bytes1(0xff),
+            address(this),
+            disc.salt,
+            initCodeHash
+        ));
+        uint256 vanityDifficulty = create2Hash.countLeadingZeroBits();
 
         // Deploy via CREATE2 — Solidity's `new ... {salt: ...}` compiles to CREATE2.
         // The resulting address MUST match vanityAddress because we use the same
@@ -557,10 +598,16 @@ contract MiningPool {
         // Sanity check: deployed address must match the registered vanity address
         assert(address(token) == vanityAddress);
 
+        token.initializeDistribution(totalSupply);
+
+        // Add the full actual vanity difficulty to the running pool total only.
+        // This cannot affect the already-frozen distribution snapshot for this token.
+        totalIntegratedDifficulty += vanityDifficulty;
+
         // Mark as deployed in the NFT
         currencyNFT.markDeployed(currencyId);
 
-        emit CurrencyDeployed(vanityAddress, address(token));
+        emit CurrencyDeployed(vanityAddress, address(token), totalSupply, vanityDifficulty);
     }
 
     /// @notice Compute the vanity address for a given set of CREATE2 parameters.

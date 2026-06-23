@@ -80,13 +80,14 @@ The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` �
 
 ## Tests
 
-Three test suites, 78 tests total, all in `test/`:
+Four test suites, 95 tests total, all in `test/`:
 
 | Suite | Tests | Coverage |
 |---|---|---|
 | `LeadingZeros.t.sol` | 11 | Unit + fuzz (1000 runs) against naive implementation |
 | `MiningPool.t.sol` | 42 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
 | `NFTIntegration.t.sol` | 25 | PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full mine-register-deploy flow |
+| `TokenDistribution.t.sol` | 17 | Distribution initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, auto-boost, multi-day flow, multiple currencies |
 
 Run: `~/.foundry/bin/forge test`
 Run with gas: `~/.foundry/bin/forge test --gas-report`
@@ -125,14 +126,15 @@ This codebase doubles as a Foundry learning resource. Add thorough documentation
 ## Implementation Status
 
 ### Phase 1: Core System — COMPLETE
-All contracts, 78 tests passing. Third-party submission/registration implemented.
+All core contracts and third-party submission/registration implemented.
 
-### Phase 2: Token Distribution — NEXT
-- Mint logic in CurrencyToken that reads player/pool scores from MiningPool
+### Phase 2: Token Distribution — COMPLETE
+- CurrencyToken initializes a fixed distribution supply from MiningPool and reads player/pool scores at snapshot day
 - 1% discoverer reward + 99% proportional distribution to all players
-- Total supply chosen by CurrencyNFT holder at deployment time
-- Player claim function (each player calls to receive their share)
-- Auto-boost pool on currency deployment: add vanity address difficulty to totalIntegratedDifficulty (not totalShareCount) so discoveries can't be withheld from the pool. Double-counting with prior share submission is intentional — it's a gift to the commons.
+- Total supply chosen by CurrencyNFT holder at deployment time via `deployCurrency(vanityAddress, totalSupply)`
+- Pull-based `claim(playerId)` function; tokens mint to the current PlayerNFT owner
+- Auto-boost pool on currency deployment: add vanity address difficulty to totalIntegratedDifficulty (not totalShareCount and not score checkpoints) so discoveries can't be withheld from the pool. Double-counting with prior share submission is intentional — it's a gift to the commons.
+- 95 tests passing, including `TokenDistribution.t.sol`
 
 ### Phase 3: Polish & Edge Cases
 - Bootstrap mechanism for empty pool (pre-seed values, decay — needs MC simulation)

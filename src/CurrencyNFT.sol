@@ -37,9 +37,12 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 ///   4. NFT becomes a souvenir / proof of provenance
 ///
 /// TRANSFERABILITY:
-///   CurrencyNFTs are freely tradeable. Selling the NFT transfers the right
+///   CurrencyNFTs are freely tradeable. Transferring the NFT transfers the right
 ///   to deploy at the vanity address and receive the 1% discoverer reward.
-///   This creates a market for vanity addresses before they're even deployed.
+///   This is mostly because for example Etherscan needs some non-trivial communication
+///   to fill token details etc. with the actual deplyoing wallet address.
+///   So if something "worthy" is discovered, someone more
+///   expericenced could "buy" it, deploy and take care of it as the "owner" of the ERC20 token.
 contract CurrencyNFT is ERC721 {
 
     /// @notice All parameters needed to reconstruct and deploy at the vanity address.

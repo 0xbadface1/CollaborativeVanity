@@ -137,7 +137,7 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 **Key functions:**
 - `submitShare(player, targetDifficulty, dayNumber, counter, salt)` — core share submission (anyone can submit on behalf of a player)
 - `registerCurrency(player, counter, salt, dayNumber, targetDifficulty)` → mints CurrencyNFT to current PlayerNFT owner
-- `deployCurrency(vanityAddress)` → CREATE2 deploys CurrencyToken, only by NFT owner
+- `deployCurrency(vanityAddress, totalSupply)` → CREATE2 deploys CurrencyToken, only by NFT owner
 - `getPlayerScoreAt(playerId, day)` → checkpoint binary search
 - `getPoolScoreAt(day)` → pool-wide checkpoint binary search
 - `getInitCodeHash(player, day, difficulty, counter, dayHash)` → for off-chain mining
@@ -152,11 +152,14 @@ Deployed via CREATE2 at discovered vanity addresses.
 - `playerId`, `dayNumber`, `targetDifficulty`, `counter`, `dayHash`
 
 **NOT in constructor** (chosen at deployment time):
-- `totalSupply` — via `mint()` function after deployment
+- `totalSupply` — passed to `MiningPool.deployCurrency()` and stored by `initializeDistribution()`
 
 **Key properties:**
 - `miningPool` = msg.sender during CREATE2 (= MiningPool address)
-- Only MiningPool can call `mint(to, amount)`
+- Only MiningPool can call `initializeDistribution(totalSupply)`
+- Players claim through `claim(playerId)`; tokens mint to the current PlayerNFT owner
+- Distribution uses `snapshotDay = dayNumber > 0 ? dayNumber - 1 : 0`
+- Supply split: 1% discoverer bonus + 99% proportional by score at snapshot day
 - Hardcoded name/symbol for now ("Vanity Currency" / "VANITY")
 
 ### CurrencyNFT (ERC-721)
@@ -175,10 +178,10 @@ Discovered vanity addresses as tradeable NFTs.
 
 **Lifecycle:**
 1. Player discovers vanity address → calls `MiningPool.registerCurrency()` → NFT minted
-2. NFT holder calls `MiningPool.deployCurrency()` → CurrencyToken deployed at vanity address
+2. NFT holder calls `MiningPool.deployCurrency(vanityAddress, totalSupply)` → CurrencyToken deployed at vanity address
 3. NFT becomes souvenir / proof of provenance
 
-Transferable — selling the NFT transfers deployment rights + discoverer reward.
+Transferable — selling the NFT transfers deployment rights. PlayerNFT ownership controls claim recipients for historical player score rights.
 
 ### PlayerNFT (ERC-721)
 
@@ -238,14 +241,16 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] Third-party submission — `submitShare` and `registerCurrency` accept explicit player address; CurrencyNFT minted to current PlayerNFT owner
 - [x] 78 tests total, all passing
 
-### Phase 2: Token Distribution (NEXT)
+### Phase 2: Token Distribution ✅ COMPLETE
 
-- [ ] Mint logic in CurrencyToken — reads player/pool scores from MiningPool
-- [ ] 1% discoverer reward + 99% proportional distribution
-- [ ] Total supply chosen by CurrencyNFT holder at deployment time
-- [ ] Player claim function (each player calls to receive their share)
-- [ ] Auto-boost pool on currency deployment — add vanity address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
-- [ ] Integration tests for full mint flow
+- [x] Mint logic in CurrencyToken — reads player/pool scores from MiningPool
+- [x] 1% discoverer reward + 99% proportional distribution
+- [x] Total supply chosen by CurrencyNFT holder at deployment time
+- [x] Player claim function (each player calls to receive their share)
+- [x] Auto-boost pool on currency deployment — add vanity address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
+- [x] Integration tests for full mint flow
+- [x] `TokenDistribution.t.sol` — 17 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
+- [x] 95 tests total, all passing
 
 ### Phase 3: Polish & Edge Cases
 
