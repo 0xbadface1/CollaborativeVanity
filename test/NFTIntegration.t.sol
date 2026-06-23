@@ -75,8 +75,7 @@ contract NFTIntegrationTest is Test {
         (salt, actualDifficulty) = _findValidSalt(
             player, dayNumber, targetDifficulty, counter, 0
         );
-        vm.prank(player);
-        pool.submitShare(targetDifficulty, dayNumber, counter, salt);
+        pool.submitShare(player, targetDifficulty, dayNumber, counter, salt);
     }
 
     // =========================================================================

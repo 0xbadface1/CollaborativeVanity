@@ -210,6 +210,12 @@ contract MiningPool {
 
     /// @notice Submit a share (proof of work).
     ///
+    ///         Anyone can call this on behalf of a player — the player address is
+    ///         an explicit parameter, not derived from msg.sender. The CREATE2 hash
+    ///         binds the share to the player cryptographically, so submitting with
+    ///         a wrong player address just produces an invalid hash. Credits accrue
+    ///         to the player's checkpoint and the PlayerNFT owner benefits.
+    ///
     /// HOW TO USE (off-chain):
     ///   1. Pick a targetDifficulty — how many leading zero bits you're "betting" on
     ///   2. Pick a dayNumber — use the current day (getCurrentDay())
@@ -223,11 +229,13 @@ contract MiningPool {
     ///   6. The salt is freely chosen — no ordering constraint.
     ///      The counter must be strictly increasing (gaps OK).
     ///
+    /// @param player The player whose address is committed in the CREATE2 hash
     /// @param targetDifficulty The difficulty level the player is betting on (in bits)
     /// @param dayNumber The day this share references (must be current day or earlier with valid hash)
     /// @param counter Share submission index (must be > last submitted counter for this player+day)
     /// @param salt The CREATE2 salt — the free search variable found off-chain
     function submitShare(
+        address player,
         uint256 targetDifficulty,
         uint256 dayNumber,
         uint256 counter,
@@ -244,9 +252,9 @@ contract MiningPool {
         if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
 
         // --- Player identity ---
-        // PlayerId = the sender's address cast to uint256.
-        // This is also the future PlayerNFT tokenId.
-        uint256 playerId = uint256(uint160(msg.sender));
+        // PlayerId = the player's address cast to uint256.
+        // This is also the PlayerNFT tokenId.
+        uint256 playerId = uint256(uint160(player));
 
         // --- Counter ordering ---
         // Must be strictly greater than the last submitted counter for this player+day.
@@ -326,7 +334,7 @@ contract MiningPool {
         hasSubmittedOnDay[playerId][dayNumber] = true;
 
         // Lazy-mint PlayerNFT on first ever submission (idempotent)
-        playerNFT.mintIfNeeded(msg.sender);
+        playerNFT.mintIfNeeded(player);
 
         emit ShareSubmitted(
             playerId,

@@ -135,8 +135,7 @@ contract MiningPoolTest is Test {
         (salt, actualDifficulty) = _findValidSaltWithDayHash(
             player, dayNumber, targetDifficulty, counter, 0, dayHash
         );
-        vm.prank(player);
-        pool.submitShare(targetDifficulty, dayNumber, counter, salt);
+        pool.submitShare(player, targetDifficulty, dayNumber, counter, salt);
     }
 
     // =========================================================================
@@ -190,8 +189,7 @@ contract MiningPoolTest is Test {
             0, bytes32(0), 0, 0, 0, false // data fields — not checked
         );
 
-        vm.prank(player1);
-        pool.submitShare(16, 0, 0, salt);
+        pool.submitShare(player1, 16, 0, 0, salt);
     }
 
     function test_submitShare_multipleSharesSameDay() public {
@@ -224,8 +222,7 @@ contract MiningPoolTest is Test {
         // Search for a valid salt starting from a large offset
         (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 5_000_000);
 
-        vm.prank(player1);
-        pool.submitShare(16, 0, 0, salt);
+        pool.submitShare(player1, 16, 0, 0, salt);
 
         assertEq(pool.totalShareCount(), 1);
     }
@@ -239,9 +236,8 @@ contract MiningPoolTest is Test {
 
         // Try counter=0 again — should revert (must be strictly increasing)
         (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 999_999);
-        vm.prank(player1);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
-        pool.submitShare(16, 0, 0, salt);
+        pool.submitShare(player1, 16, 0, 0, salt);
     }
 
     function testRevert_submitShare_counterLowerThanPrevious() public {
@@ -249,9 +245,8 @@ contract MiningPoolTest is Test {
 
         // Try counter=3 (lower than 5) — should revert
         (bytes32 salt,) = _findValidSalt(player1, 0, 16, 3, 0);
-        vm.prank(player1);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
-        pool.submitShare(16, 0, 3, salt);
+        pool.submitShare(player1, 16, 0, 3, salt);
     }
 
     function test_submitShare_counterGapsAllowed() public {
@@ -268,9 +263,8 @@ contract MiningPoolTest is Test {
 
     function testRevert_submitShare_belowMinDifficulty() public {
         // A random salt will almost certainly produce < 16 leading zeros
-        vm.prank(player1);
         vm.expectRevert(MiningPool.BelowMinDifficulty.selector);
-        pool.submitShare(16, 0, 0, bytes32(uint256(42)));
+        pool.submitShare(player1, 16, 0, 0, bytes32(uint256(42)));
     }
 
     function test_submitShare_invalidShare_belowTarget() public {
@@ -283,8 +277,7 @@ contract MiningPoolTest is Test {
 
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
         (bytes32 salt,) = _findValidSalt(player2, 0, 200, 0, 0);
-        vm.prank(player2);
-        pool.submitShare(200, 0, 0, salt);
+        pool.submitShare(player2, 200, 0, 0, salt);
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
 
         uint256 creditAwarded = scoreAfter - scoreBefore;
@@ -299,8 +292,7 @@ contract MiningPoolTest is Test {
         uint256 playerId = uint256(uint160(player1));
         (bytes32 salt, uint256 actualDifficulty) = _findValidSalt(player1, 0, 16, 0, 0);
 
-        vm.prank(player1);
-        pool.submitShare(16, 0, 0, salt);
+        pool.submitShare(player1, 16, 0, 0, salt);
 
         uint256 playerScore = pool.getPlayerScoreAt(playerId, 0);
         if (actualDifficulty >= 16) {
@@ -330,8 +322,7 @@ contract MiningPoolTest is Test {
 
         // Submit invalid share as player2 (target=200, actual will be ~16)
         (bytes32 salt,) = _findValidSalt(player2, 0, 200, 0, 0);
-        vm.prank(player2);
-        pool.submitShare(200, 0, 0, salt);
+        pool.submitShare(player2, 200, 0, 0, salt);
 
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
         assertEq(
@@ -405,9 +396,8 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     function testRevert_submitShare_futureDayNumber() public {
-        vm.prank(player1);
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
-        pool.submitShare(16, 1, 0, bytes32(uint256(42)));
+        pool.submitShare(player1, 16, 1, 0, bytes32(uint256(42)));
     }
 
     function testRevert_submitShare_skippedDayNumber() public {
@@ -416,9 +406,8 @@ contract MiningPoolTest is Test {
 
         // Day 3 was skipped — no hash exists
         (bytes32 salt,) = _findValidSalt(player1, 3, 16, 0, 0);
-        vm.prank(player1);
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
-        pool.submitShare(16, 3, 0, salt);
+        pool.submitShare(player1, 16, 3, 0, salt);
     }
 
     // =========================================================================
