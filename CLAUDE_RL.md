@@ -1,5 +1,6 @@
 # When Claude Was Wrong
 
+compiled by Claude, I was too lazy...
 
 ---
 
