@@ -21,7 +21,7 @@ initCodeHash = keccak256(CurrencyToken.creationCode || abi.encode(playerId, dayN
 address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 ```
 
-Players pre-commit to a difficulty target (baked into the hash), preventing cherry-picking of lucky results. Valid shares are credited at the target difficulty (capped at 1% of pool). Invalid shares still earn the pool average — rewarding participation.
+Players pre-commit to a difficulty target (baked into the hash), preventing cherry-picking of lucky results. Valid shares are credited at the target difficulty (capped at 1% of pool). Invalid shares still earn the pool average, capped by the same 1% per-share ceiling — rewarding participation without bypassing the cap.
 
 When someone discovers a vanity address, they register it as a CurrencyNFT and can later deploy an ERC-20 token at that exact address. Token supply is distributed proportionally to all players based on their accumulated scores.
 
@@ -52,7 +52,7 @@ forge test --gas-report  # with gas reporting
 
 **Phase 2 (Token Distribution)** — Complete. Mint logic, 1%/99% distribution, player claims.
 
-Current test suite: 95 tests passing.
+Current test suite: 96 tests passing.
 
 See `IMPLEMENTATION_PLAN.md` for full roadmap and `GAME_THEORY_ANALYSIS.md` for attack scenario analysis.
 

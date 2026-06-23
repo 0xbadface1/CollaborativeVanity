@@ -205,7 +205,7 @@ Counts leading zero bits in bytes32. Binary search approach — O(8) steps. Used
 Target difficulty is baked into initCode (constructor params). Can't retroactively lower.
 
 - **Valid share** (actual >= target): credit = target, capped at 1% of pool total
-- **Invalid share** (actual < target): credit = current pool average
+- **Invalid share** (actual < target): credit = current pool average, capped at 1% of pool total
 - **Pool total**: always gets full uncapped actual difficulty
 
 ### Dual Accounting
@@ -213,7 +213,7 @@ Target difficulty is baked into initCode (constructor params). Can't retroactive
 | | Player's Credit | Pool's Total |
 |---|---|---|
 | Valid share | `min(target, totalDifficulty / 100)` | Full actual difficulty |
-| Invalid share | `totalDifficulty / totalShareCount` | Full actual difficulty |
+| Invalid share | `min(totalDifficulty / totalShareCount, totalDifficulty / 100)` | Full actual difficulty |
 
 Lucky mega-shares boost the pool average for everyone — socialized luck.
 
@@ -237,7 +237,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
 - [x] `LeadingZeros.t.sol` — 11 tests including fuzz test against naive implementation
-- [x] `MiningPool.t.sol` — 42 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
+- [x] `MiningPool.t.sol` — 43 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
 - [x] `NFTIntegration.t.sol` — 25 tests covering PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full flow
 - [x] Third-party submission — `submitShare` and `registerCurrency` accept explicit player address; CurrencyNFT minted to current PlayerNFT owner
 - [x] 78 Phase 1 tests, all passing before Phase 2 additions
@@ -251,7 +251,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] Auto-boost pool on currency deployment — add vanity address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [x] Integration tests for full mint flow
 - [x] `TokenDistribution.t.sol` — 17 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
-- [x] 95 tests total, all passing
+- [x] 96 tests total, all passing
 
 ### Phase 3: Polish & Edge Cases
 

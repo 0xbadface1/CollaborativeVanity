@@ -71,6 +71,15 @@ contract MiningPool {
     ///         100 = 1% (we divide by this, so 100 means 1/100 = 1%)
     uint256 public constant MAX_SHARE_CREDIT_DIVISOR = 100;
 
+    /// @notice Synthetic baseline used to bootstrap early pool economics.
+    ///         The pool starts with enough difficulty for a minimum valid share
+    ///         to receive full credit under the 1% cap.
+    uint256 public constant BOOTSTRAP_SHARE_COUNT = 10;
+    uint256 public constant BOOTSTRAP_AVERAGE_DIFFICULTY =
+        MIN_SHARE_DIFFICULTY * MAX_SHARE_CREDIT_DIVISOR / BOOTSTRAP_SHARE_COUNT;
+    uint256 public constant BOOTSTRAP_INTEGRATED_DIFFICULTY =
+        BOOTSTRAP_SHARE_COUNT * BOOTSTRAP_AVERAGE_DIFFICULTY;
+
     // =========================================================================
     //                              DATA TYPES
     // =========================================================================
@@ -193,11 +202,12 @@ contract MiningPool {
         if (block.chainid != expectedChainId) revert WrongChain(expectedChainId, block.chainid);
         dayZeroTimestamp = block.timestamp;
 
-        // Bootstrap the pool score with a tiny denominator so day-0 discoveries
-        // can initialize distribution safely before organic pool history exists.
-        // This is intentionally score-only: running share and difficulty totals
-        // still start at zero.
-        _poolScores.push(0, 1);
+        // Bootstrap the pool with a synthetic baseline so early shares use the
+        // same capped credit path as mature pool activity. The synthetic score
+        // is intentionally unowned, so very early distributions leave more dust.
+        totalShareCount = BOOTSTRAP_SHARE_COUNT;
+        totalIntegratedDifficulty = BOOTSTRAP_INTEGRATED_DIFFICULTY;
+        _poolScores.push(0, BOOTSTRAP_INTEGRATED_DIFFICULTY);
 
         // Deploy NFT contracts — they store address(this) as their authorized minter
         playerNFT = new PlayerNFT();
@@ -314,12 +324,9 @@ contract MiningPool {
             // Invalid share (didn't meet target): credit = current average.
             // This rewards participation even when the target was missed.
             // Average = totalIntegratedDifficulty / totalShareCount
-            if (totalShareCount > 0) {
-                credit = totalIntegratedDifficulty / totalShareCount;
-            } else {
-                // Pool is empty — first share ever. Give a small base credit.
-                credit = 1;
-            }
+            credit = totalIntegratedDifficulty / totalShareCount;
+            uint256 maxCredit = totalIntegratedDifficulty / MAX_SHARE_CREDIT_DIVISOR;
+            if (credit > maxCredit) credit = maxCredit;
             valid = false;
         }
 

@@ -156,9 +156,10 @@ contract MiningPoolTest is Test {
         assertEq(pool.getCurrentDay(), 0);
     }
 
-    function test_constructor_poolStartsEmpty() public view {
-        assertEq(pool.totalShareCount(), 0);
-        assertEq(pool.totalIntegratedDifficulty(), 0);
+    function test_constructor_poolStartsWithBootstrapBaseline() public view {
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT());
+        assertEq(pool.totalIntegratedDifficulty(), pool.BOOTSTRAP_INTEGRATED_DIFFICULTY());
+        assertEq(pool.getPoolScoreAt(0), pool.BOOTSTRAP_INTEGRATED_DIFFICULTY());
     }
 
     // =========================================================================
@@ -166,14 +167,14 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     function test_submitShare_validShare() public {
-        (bytes32 salt, uint256 actualDifficulty) = _submitValidShare(player1, 0, 16, 0);
+        (, uint256 actualDifficulty) = _submitValidShare(player1, 0, 16, 0);
 
         uint256 playerId = uint256(uint160(player1));
         uint256 playerScore = pool.getPlayerScoreAt(playerId, 0);
         assertTrue(playerScore > 0, "Player should have a score after valid share");
 
-        assertEq(pool.totalShareCount(), 1);
-        assertEq(pool.totalIntegratedDifficulty(), actualDifficulty);
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1);
+        assertEq(pool.totalIntegratedDifficulty(), pool.BOOTSTRAP_INTEGRATED_DIFFICULTY() + actualDifficulty);
 
         assertTrue(pool.hasSubmittedOnDay(playerId, 0));
         assertEq(pool.lastShareCounter(playerId, 0), 0);
@@ -197,7 +198,7 @@ contract MiningPoolTest is Test {
         _submitValidShare(player1, 0, 16, 0);
         _submitValidShare(player1, 0, 16, 1);
 
-        assertEq(pool.totalShareCount(), 2);
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 2);
         assertEq(pool.lastShareCounter(uint256(uint160(player1)), 0), 1);
     }
 
@@ -206,7 +207,7 @@ contract MiningPoolTest is Test {
         _submitValidShare(player1, 0, 16, 0);
         _submitValidShare(player2, 0, 16, 0);
 
-        assertEq(pool.totalShareCount(), 2);
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 2);
 
         uint256 id1 = uint256(uint160(player1));
         uint256 id2 = uint256(uint160(player2));
@@ -216,15 +217,12 @@ contract MiningPoolTest is Test {
 
     function test_submitShare_anySaltWithValidCounter() public {
         // Salt is free — player can use any bytes32 value
-        bytes32 dayHash = pool.dayHashes(0);
-        bytes32 initCodeHash = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
-
         // Search for a valid salt starting from a large offset
         (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 5_000_000);
 
         pool.submitShare(player1, 16, 0, 0, salt);
 
-        assertEq(pool.totalShareCount(), 1);
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1);
     }
 
     // =========================================================================
@@ -253,7 +251,7 @@ contract MiningPoolTest is Test {
         _submitValidShare(player1, 0, 16, 0);
         _submitValidShare(player1, 0, 16, 1000); // gap from 0 to 1000
 
-        assertEq(pool.totalShareCount(), 2);
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 2);
         assertEq(pool.lastShareCounter(uint256(uint160(player1)), 0), 1000);
     }
 
@@ -274,6 +272,8 @@ contract MiningPoolTest is Test {
         // Build some pool state first
         _submitValidShare(player1, 0, 16, 0);
         uint256 expectedAverage = pool.totalIntegratedDifficulty() / pool.totalShareCount();
+        uint256 maxCredit = pool.totalIntegratedDifficulty() / pool.MAX_SHARE_CREDIT_DIVISOR();
+        uint256 expectedCredit = expectedAverage < maxCredit ? expectedAverage : maxCredit;
 
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
         (bytes32 salt,) = _findValidSalt(player2, 0, 200, 0, 0);
@@ -281,7 +281,7 @@ contract MiningPoolTest is Test {
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
 
         uint256 creditAwarded = scoreAfter - scoreBefore;
-        assertEq(creditAwarded, expectedAverage, "Invalid share should get pool average");
+        assertEq(creditAwarded, expectedCredit, "Invalid share should get capped pool average");
     }
 
     // =========================================================================
@@ -305,7 +305,7 @@ contract MiningPoolTest is Test {
 
         assertEq(
             pool.totalIntegratedDifficulty(),
-            actualDiff,
+            pool.BOOTSTRAP_INTEGRATED_DIFFICULTY() + actualDiff,
             "Pool should get full uncapped actual difficulty"
         );
     }
@@ -317,6 +317,8 @@ contract MiningPoolTest is Test {
         }
 
         uint256 expectedAverage = pool.totalIntegratedDifficulty() / pool.totalShareCount();
+        uint256 maxCredit = pool.totalIntegratedDifficulty() / pool.MAX_SHARE_CREDIT_DIVISOR();
+        uint256 expectedCredit = expectedAverage < maxCredit ? expectedAverage : maxCredit;
         uint256 player2Id = uint256(uint160(player2));
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
 
@@ -327,9 +329,23 @@ contract MiningPoolTest is Test {
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
         assertEq(
             scoreAfter - scoreBefore,
-            expectedAverage,
-            "Invalid share credit should equal pool average"
+            expectedCredit,
+            "Invalid share credit should equal capped pool average"
         );
+    }
+
+    function test_submitShare_invalidShare_creditCappedAtOnePercent() public {
+        uint256 player2Id = uint256(uint160(player2));
+
+        uint256 averageCredit = pool.totalIntegratedDifficulty() / pool.totalShareCount();
+        uint256 maxCredit = pool.totalIntegratedDifficulty() / pool.MAX_SHARE_CREDIT_DIVISOR();
+        assertGt(averageCredit, maxCredit, "test setup should expose cap");
+
+        uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
+        _submitValidShare(player2, 0, 200, 0);
+        uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
+
+        assertEq(scoreAfter - scoreBefore, maxCredit, "Invalid share credit should be capped");
     }
 
     // =========================================================================
@@ -450,7 +466,11 @@ contract MiningPoolTest is Test {
         uint256 p1Score = pool.getPlayerScoreAt(id1, 0);
         uint256 p2Score = pool.getPlayerScoreAt(id2, 0);
 
-        assertEq(poolScore, p1Score + p2Score + 1, "Pool score = player scores plus bootstrap");
+        assertEq(
+            poolScore,
+            p1Score + p2Score + pool.BOOTSTRAP_INTEGRATED_DIFFICULTY(),
+            "Pool score = player scores plus bootstrap"
+        );
     }
 
     function test_checkpoints_lookupSkippedDayReturnsPrevious() public {
@@ -576,27 +596,27 @@ contract MiningPoolTest is Test {
 
         // Now mine using the published dayHash
         _submitValidShare(player1, 1, 16, 0);
-        assertEq(pool.totalShareCount(), 1, "Should accept share on published day");
+        assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1, "Should accept share on published day");
     }
 
     // =========================================================================
     //                    getPoolStats TESTS
     // =========================================================================
 
-    function test_getPoolStats_empty() public view {
+    function test_getPoolStats_bootstrapOnly() public view {
         (uint256 shares, uint256 difficulty, uint256 day, uint256 avg) = pool.getPoolStats();
-        assertEq(shares, 0);
-        assertEq(difficulty, 0);
+        assertEq(shares, pool.BOOTSTRAP_SHARE_COUNT());
+        assertEq(difficulty, pool.BOOTSTRAP_INTEGRATED_DIFFICULTY());
         assertEq(day, 0);
-        assertEq(avg, 0);
+        assertEq(avg, pool.BOOTSTRAP_AVERAGE_DIFFICULTY());
     }
 
     function test_getPoolStats_afterShares() public {
         _submitValidShare(player1, 0, 16, 0);
 
         (uint256 shares, uint256 difficulty,, uint256 avg) = pool.getPoolStats();
-        assertEq(shares, 1);
-        assertTrue(difficulty >= 16, "Difficulty should be at least MIN_SHARE_DIFFICULTY");
-        assertEq(avg, difficulty, "Average should equal total when only 1 share");
+        assertEq(shares, pool.BOOTSTRAP_SHARE_COUNT() + 1);
+        assertTrue(difficulty >= pool.BOOTSTRAP_INTEGRATED_DIFFICULTY() + 16, "Difficulty includes bootstrap plus share");
+        assertEq(avg, difficulty / shares, "Average should use bootstrap and organic shares");
     }
 }
