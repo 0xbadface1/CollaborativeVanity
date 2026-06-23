@@ -110,8 +110,10 @@ address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 
 **This is prevented by design.** The discoverer's playerId (= wallet address) is baked into the initCode constructor params. A different player using the same salt and counter produces a completely different initCodeHash — and therefore a different address. The vanity pattern won't match.
 
+Note: `submitShare` and `registerCurrency` accept the player address as an explicit parameter (enabling third-party/gasless submission), but front-running is still impossible — the vanity address is cryptographically bound to the original player's address, so an attacker substituting their own address produces a different (non-vanity) result. The CurrencyNFT is always minted to the current owner of the player's PlayerNFT, not to the caller.
+
 ### Verdict
-**Prevented by the discoverer's address being cryptographically bound to the initCode.** This is enforced automatically — `playerId` is derived from `msg.sender` in the contract.
+**Prevented by the discoverer's address being cryptographically bound to the initCode.** The protection comes from the CREATE2 hash construction, not from access control.
 
 ---
 

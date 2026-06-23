@@ -86,7 +86,7 @@ CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 
 | Variable | Where | Role | Constraint |
 |---|---|---|---|
-| `playerId` | initCode | Player identity (= wallet address) | Derived from msg.sender |
+| `playerId` | initCode | Player identity (= wallet address) | Explicit parameter (third-party submission OK) |
 | `dayNumber` | initCode | Time anchor | Must have valid dayHash |
 | `targetDifficulty` | initCode | Pre-committed difficulty bet | Anti-Sybil: can't retroactively lower |
 | `counter` | initCode | Share submission index | Strictly increasing per player per day |
@@ -135,8 +135,8 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 - `CurrencyNFT currencyNFT` — deployed by constructor
 
 **Key functions:**
-- `submitShare(targetDifficulty, dayNumber, counter, salt)` — core share submission
-- `registerCurrency(counter, salt, dayNumber, targetDifficulty)` → mints CurrencyNFT
+- `submitShare(player, targetDifficulty, dayNumber, counter, salt)` — core share submission (anyone can submit on behalf of a player)
+- `registerCurrency(player, counter, salt, dayNumber, targetDifficulty)` → mints CurrencyNFT to current PlayerNFT owner
 - `deployCurrency(vanityAddress)` → CREATE2 deploys CurrencyToken, only by NFT owner
 - `getPlayerScoreAt(playerId, day)` → checkpoint binary search
 - `getPoolScoreAt(day)` → pool-wide checkpoint binary search
@@ -234,8 +234,9 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
 - [x] `LeadingZeros.t.sol` — 11 tests including fuzz test against naive implementation
 - [x] `MiningPool.t.sol` — 42 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
-- [x] `NFTIntegration.t.sol` — 22 tests covering PlayerNFT, CurrencyNFT, registration, deployment, full flow
-- [x] 75 tests total, all passing
+- [x] `NFTIntegration.t.sol` — 25 tests covering PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full flow
+- [x] Third-party submission — `submitShare` and `registerCurrency` accept explicit player address; CurrencyNFT minted to current PlayerNFT owner
+- [x] 78 tests total, all passing
 
 ### Phase 2: Token Distribution (NEXT)
 
@@ -293,4 +294,4 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 
 ---
 
-*v3 — June 2026. Incorporates: player terminology, counter/salt separation, initCode-based hash verification, on-chain bytecode hashing, O(1) day advancement, NFT integration, implementation progress tracking.*
+*v4 — June 2026. Incorporates: player terminology, counter/salt separation, initCode-based hash verification, on-chain bytecode hashing, O(1) day advancement, NFT integration, third-party submission/registration, implementation progress tracking.*
