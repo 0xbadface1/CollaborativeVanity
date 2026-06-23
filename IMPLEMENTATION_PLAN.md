@@ -40,7 +40,8 @@ CollaborativeVanity/
 ├── test/
 │   ├── LeadingZeros.t.sol          # Unit + fuzz tests for difficulty counting
 │   ├── MiningPool.t.sol            # Share submission, scoring, day advancement
-│   └── NFTIntegration.t.sol        # PlayerNFT, CurrencyNFT, registration, deployment flow
+│   ├── NFTIntegration.t.sol        # PlayerNFT, CurrencyNFT, registration, deployment flow
+│   └── TokenDistribution.t.sol     # Distribution initialization, claims, snapshots, auto-boost
 ├── IMPLEMENTATION_PLAN.md          # This file
 ├── GAME_THEORY_ANALYSIS.md         # Attack scenario analysis
 └── CryptographicLuck_draft.pdf     # The paper
@@ -239,7 +240,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] `MiningPool.t.sol` — 42 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
 - [x] `NFTIntegration.t.sol` — 25 tests covering PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full flow
 - [x] Third-party submission — `submitShare` and `registerCurrency` accept explicit player address; CurrencyNFT minted to current PlayerNFT owner
-- [x] 78 tests total, all passing
+- [x] 78 Phase 1 tests, all passing before Phase 2 additions
 
 ### Phase 2: Token Distribution ✅ COMPLETE
 

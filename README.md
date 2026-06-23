@@ -48,9 +48,11 @@ forge test --gas-report  # with gas reporting
 
 ## Status
 
-**Phase 1 (Core System)** — Complete. 78 tests passing.
+**Phase 1 (Core System)** — Complete.
 
-**Phase 2 (Token Distribution)** — Next. Mint logic, 1%/99% distribution, player claims.
+**Phase 2 (Token Distribution)** — Complete. Mint logic, 1%/99% distribution, player claims.
+
+Current test suite: 95 tests passing.
 
 See `IMPLEMENTATION_PLAN.md` for full roadmap and `GAME_THEORY_ANALYSIS.md` for attack scenario analysis.
 
