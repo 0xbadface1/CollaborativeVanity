@@ -231,12 +231,12 @@ Players could rush to submit invalid shares during this window, each getting the
 Base forks. Both chains initially have chainid 8453. Shares valid on one chain are replayed on the other.
 
 ### Protections
-1. `block.chainid` stored at construction, checked at runtime
-2. `address(this)` included in the share hash — different deployment = different address = different hashes
+1. `block.chainid` checked at construction — constructor reverts if deployed on wrong chain
+2. `address(this)` included in the dayHash — different deployment = different address = different hashes
 3. On a legitimate fork, the forking chain should change its chainid
 
 ### Verdict
-**Low risk.** Base is a centralized-sequencer L2; an uncoordinated fork is extremely unlikely. If it happened, chainid + contract address binding provides reasonable protection.
+**Low risk.** Base is a centralized-sequencer L2; an uncoordinated fork is extremely unlikely. If it happened, the contract address binding in dayHash provides protection — a fork with a different MiningPool deployment produces entirely different dayHashes and therefore different address spaces.
 
 ---
 
@@ -293,7 +293,7 @@ With same-day discovery (dayHash from today):
 | **Discoverer playerId in initCode** | Front-running discoveries |
 | **dayHash in initCode** | Pre-computing shares for future days |
 | **Minimum share difficulty threshold** | Spam/griefing, average reward exploitation |
-| **Chain + contract lock in hash** | Cross-chain replay, fork replay |
+| **Constructor chain check + contract address in dayHash** | Cross-chain replay, fork replay |
 | **Bootstrap pre-seeding + decay** | Cold-start manipulation |
 | **Checkpoints with binary search** | Efficient historical score lookups for distribution |
 

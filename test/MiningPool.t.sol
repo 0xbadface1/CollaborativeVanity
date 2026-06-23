@@ -107,11 +107,10 @@ contract MiningPoolTest is Test {
     }
 
     /// @notice Precompute the dayHash that MiningPool._advanceDay() will publish
-    ///         for a given day. Uses the same formula: keccak256(chainId, pool, prevrandao, day).
+    ///         for a given day. Uses the same formula: keccak256(pool, prevrandao, day).
     ///         Useful for finding valid salts BEFORE the day has been advanced on-chain.
     function _precomputeDayHash(uint256 dayNumber) internal view returns (bytes32) {
         return keccak256(abi.encodePacked(
-            block.chainid,
             address(pool),
             block.prevrandao,
             dayNumber

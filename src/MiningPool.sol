@@ -195,7 +195,6 @@ contract MiningPool {
 
         // Publish day 0's hash immediately
         bytes32 day0Hash = keccak256(abi.encodePacked(
-            block.chainid,
             address(this),
             block.prevrandao,
             uint256(0) // day number
@@ -595,7 +594,6 @@ contract MiningPool {
         // Publish ONLY the new day's hash. Skipped days get no hash — you can't
         // submit shares for them, but that's fine since nobody was mining those days.
         bytes32 newDayHash = keccak256(abi.encodePacked(
-            block.chainid,
             address(this),
             block.prevrandao,
             newDay
