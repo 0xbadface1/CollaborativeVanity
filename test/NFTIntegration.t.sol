@@ -190,6 +190,14 @@ contract NFTIntegrationTest is Test {
         pool.registerCurrency(player1, 0, bytes32(uint256(100)), 5, minWork);
     }
 
+    function testRevert_registerCurrency_zeroPlayer() public {
+        // Reverts on the zero address before doing any work. Read MIN_SHARE_WORK() into
+        // a local first so expectRevert watches registerCurrency, not the arg call.
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        vm.expectRevert(MiningPool.ZeroPlayer.selector);
+        pool.registerCurrency(address(0), 0, bytes32(uint256(1)), 0, minWork);
+    }
+
     function test_registerCurrency_thirdPartyRegistration() public {
         bytes32 salt = bytes32(uint256(42));
 

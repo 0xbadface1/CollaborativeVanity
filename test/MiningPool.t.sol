@@ -322,6 +322,16 @@ contract MiningPoolTest is Test {
         pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
+    function testRevert_submitShare_zeroPlayer() public {
+        // The zero address has no usable identity — reverts up front with a clear
+        // error rather than failing later in the PlayerNFT mint.
+        // Note: read MIN_SHARE_WORK() into a local BEFORE expectRevert — otherwise the
+        // arg-evaluation external call becomes the "next call" expectRevert watches.
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        vm.expectRevert(MiningPool.ZeroPlayer.selector);
+        pool.submitShare(address(0), minWork, 0, 1, bytes32(0));
+    }
+
     function test_submitShare_invalidShare_belowTarget() public {
         uint256 unreachableTargetWork = 1 << 128;
         uint256 player2Id = uint256(uint160(player2));
@@ -623,6 +633,72 @@ contract MiningPoolTest is Test {
 
         uint256 day3Score = pool.getPlayerScoreAt(playerId, 3);
         assertEq(day3Score, day0Score, "Skipped day lookup should return last known score");
+    }
+
+    /// @notice Characterization test for getPlayerScoreAt across many days with gaps.
+    ///         A player submits on days 0, 2, 5 (counters reset per day). We then probe
+    ///         every day 0..6 and assert the cumulative score is the most recent
+    ///         checkpoint at-or-before each day — exactly the upperLookup contract.
+    ///         Serves as a behavioral lock before swapping upperLookup ->
+    ///         upperLookupRecent (which must return identical values).
+    function test_checkpoints_playerLookupAcrossGaps() public {
+        uint256 playerId = uint256(uint160(player1));
+        uint256 zero = pool.dayZeroTimestamp();
+
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        uint256 score0 = pool.getPlayerScoreAt(playerId, 0);
+
+        vm.warp(zero + 2 days);
+        _submitValidShare(player1, 2, pool.MIN_SHARE_WORK(), 1);
+        uint256 score2 = pool.getPlayerScoreAt(playerId, 2);
+
+        vm.warp(zero + 5 days);
+        _submitValidShare(player1, 5, pool.MIN_SHARE_WORK(), 1);
+        uint256 score5 = pool.getPlayerScoreAt(playerId, 5);
+
+        // Active days strictly grow (each share adds a positive credit).
+        assertGt(score2, score0, "score grows on day 2");
+        assertGt(score5, score2, "score grows on day 5");
+
+        // Probe the full range — gaps return the previous checkpoint, the tail holds.
+        assertEq(pool.getPlayerScoreAt(playerId, 0), score0, "day 0");
+        assertEq(pool.getPlayerScoreAt(playerId, 1), score0, "gap day 1 -> day 0");
+        assertEq(pool.getPlayerScoreAt(playerId, 2), score2, "day 2");
+        assertEq(pool.getPlayerScoreAt(playerId, 3), score2, "gap day 3 -> day 2");
+        assertEq(pool.getPlayerScoreAt(playerId, 4), score2, "gap day 4 -> day 2");
+        assertEq(pool.getPlayerScoreAt(playerId, 5), score5, "day 5");
+        assertEq(pool.getPlayerScoreAt(playerId, 6), score5, "after last -> day 5");
+    }
+
+    /// @notice Characterization test tying getPoolScoreAt to getPlayerScoreAt across
+    ///         days. With two players submitting on different days (incl. gaps), the
+    ///         pool score at every day must equal the bootstrap seed plus the sum of
+    ///         all player scores at that same day. Exercises both the pool-wide and
+    ///         per-player upperLookup paths — another behavioral lock for the
+    ///         upperLookupRecent swap.
+    function test_checkpoints_poolScoreEqualsPlayerSumAcrossDays() public {
+        uint256 p1 = uint256(uint160(player1));
+        uint256 p2 = uint256(uint160(player2));
+        uint256 bootstrap = pool.BOOTSTRAP_INTEGRATED_WORK();
+        uint256 zero = pool.dayZeroTimestamp();
+
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player2, 0, pool.MIN_SHARE_WORK(), 1);
+
+        vm.warp(zero + 2 days);
+        _submitValidShare(player1, 2, pool.MIN_SHARE_WORK(), 1);
+
+        vm.warp(zero + 3 days);
+        _submitValidShare(player2, 3, pool.MIN_SHARE_WORK(), 1);
+
+        // Invariant holds at every day, including the gap (day 1) and past the last (day 4).
+        for (uint256 d = 0; d <= 4; d++) {
+            assertEq(
+                pool.getPoolScoreAt(d),
+                bootstrap + pool.getPlayerScoreAt(p1, d) + pool.getPlayerScoreAt(p2, d),
+                "pool score = bootstrap + sum of player scores at every day"
+            );
+        }
     }
 
     // =========================================================================
