@@ -61,7 +61,7 @@ address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 ```
 
 **Counter vs Salt — critical distinction:**
-- `counter` is in initCode (constructor param). Defines WHICH address space to search. Strictly increasing per player per day. Changing counter = entirely different 2^256 search space.
+- `counter` is in initCode (constructor param). Defines WHICH address space to search. Strictly increasing per player per day, starting at 1 (the default `lastShareCounter` of 0 means "nothing submitted yet", so counter 0 is reserved and the first share of a day must use counter >= 1 — this lets us avoid a separate "has submitted" flag). Changing counter = entirely different 2^256 search space.
 - `salt` is the CREATE2 salt. The FREE search variable iterated billions of times off-chain. No ordering constraint.
 - `dayHash` is in initCode (constructor param). On-chain daily randomness that prevents pre-computing shares for future days. Published via `getCurrentDayHash()` or automatically on each day's first submission.
 
