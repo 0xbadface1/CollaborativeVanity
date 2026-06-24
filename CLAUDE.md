@@ -15,8 +15,10 @@ Author: **Tristan Badface** (0xbadface.eth)
 ## Git
 
 - Author: `Tristan Badface <tristan@0xbadface.xyz>`
-- Do NOT commit unless explicitly asked. The user controls commit timing.
-- Run tests before committing: `~/.foundry/bin/forge test`
+- Commit proactively in small, logical steps — don't batch unrelated changes into one commit.
+- Prefer each commit to build and pass tests. When a clean split needs a non-functional intermediate (e.g. remove a flag, then migrate tests), commit it anyway but note the broken/WIP state in the commit body. Never commit something broken silently.
+- Do NOT push — the user pushes manually.
+- Run tests before a commit you expect to pass: `~/.foundry/bin/forge test`
 
 ---
 
