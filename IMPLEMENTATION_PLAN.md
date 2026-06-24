@@ -259,16 +259,16 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 
 ### Phase 3: Polish & Edge Cases
 
-- [ ] Bootstrap mechanism for empty pool (pre-seed values, decay, parameters)
+- [~] Bootstrap mechanism for empty pool — pre-seed values IMPLEMENTED (`BOOTSTRAP_*` constants seed the pool in the constructor); decay schedule + parameter calibration still pending (needs MC sim)
 - [ ] Day 0/1 edge case handling
 - [ ] Minimum share work calibration vs Base gas costs
 - [ ] Share expiration (practical concern, TBD)
 - [ ] Gas optimization
-  - [ ] Use `upperLookupRecent` instead of `upperLookup` in submitShare (2 lookups per call, always recent keys)
+  - [x] submitShare score reads — used `latest()` (O(1) tail read) instead of `upperLookup`/`upperLookupRecent`; valid because checkpoints are keyed by monotonic `today`, so the latest key is always <= today. Invariant documented inline.
   - [ ] creationCode CODECOPY gas (~3-6K per submitShare) — investigate assembly-level optimization
-- [ ] Move `getCurrentDayHash()` out of "VIEW FUNCTIONS" section (it modifies state)
-- [ ] Add explicit `player == address(0)` revert in submitShare and registerCurrency (currently relies on downstream ERC721 revert with non-descriptive error)
-- [ ] Consider `require` instead of `assert` in deployCurrency line 558 (assert consumes all gas on failure)
+- [x] Move `getCurrentDayHash()` out of "VIEW FUNCTIONS" section (it modifies state) — now in CORE FUNCTIONS with a STATE-CHANGING NatSpec
+- [x] Add explicit `player == address(0)` revert (`ZeroPlayer`) in submitShare and registerCurrency
+- [x] Replaced `assert` with a descriptive `DeployedAddressMismatch` revert in deployCurrency (assert consumes all gas on failure)
 
 ### Phase 4: BountyEscrow (optional)
 
