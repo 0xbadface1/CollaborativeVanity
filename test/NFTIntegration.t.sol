@@ -6,14 +6,11 @@ import {MiningPool} from "../src/MiningPool.sol";
 import {PlayerNFT} from "../src/PlayerNFT.sol";
 import {CurrencyNFT} from "../src/CurrencyNFT.sol";
 import {CurrencyToken} from "../src/CurrencyToken.sol";
-import {LeadingZeros} from "../src/libraries/LeadingZeros.sol";
 
 /// @title NFTIntegrationTest
 /// @notice Tests for PlayerNFT lazy minting, CurrencyNFT registration,
 ///         and CurrencyToken deployment via CREATE2.
 contract NFTIntegrationTest is Test {
-    using LeadingZeros for bytes32;
-
     MiningPool public pool;
     PlayerNFT public playerNFT;
     CurrencyNFT public currencyNFT;
@@ -34,49 +31,38 @@ contract NFTIntegrationTest is Test {
     //                         HELPER FUNCTIONS
     // =========================================================================
 
-    function _findValidSalt(
-        address player,
-        uint256 dayNumber,
-        uint256 targetDifficulty,
-        uint256 counter,
-        uint256 startSalt
-    ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
+    function _findValidSalt(address player, uint256 dayNumber, uint256 targetWork, uint256 counter, uint256 startSalt)
+        internal
+        view
+        returns (bytes32 salt, uint256 actualWork)
+    {
         bytes32 dayHash = pool.dayHashes(dayNumber);
-        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
         address poolAddr = address(pool);
-        uint256 minDiff = pool.MIN_SHARE_DIFFICULTY();
+        uint256 minWork = pool.MIN_SHARE_WORK();
 
         uint256 freeMemPtr;
         assembly { freeMemPtr := mload(0x40) }
 
         for (uint256 i = startSalt; i < startSalt + 10_000_000; i++) {
             salt = bytes32(i);
-            bytes32 create2Hash = keccak256(abi.encodePacked(
-                bytes1(0xff),
-                poolAddr,
-                salt,
-                initCodeHash
-            ));
+            bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), poolAddr, salt, initCodeHash));
             assembly { mstore(0x40, freeMemPtr) }
 
-            actualDifficulty = create2Hash.countLeadingZeroBits();
-            if (actualDifficulty >= minDiff) {
-                return (salt, actualDifficulty);
+            actualWork = pool.hashToWork(create2Hash);
+            if (actualWork >= minWork) {
+                return (salt, actualWork);
             }
         }
         revert("_findValidSalt: exhausted search space");
     }
 
-    function _submitValidShare(
-        address player,
-        uint256 dayNumber,
-        uint256 targetDifficulty,
-        uint256 counter
-    ) internal returns (bytes32 salt, uint256 actualDifficulty) {
-        (salt, actualDifficulty) = _findValidSalt(
-            player, dayNumber, targetDifficulty, counter, 0
-        );
-        pool.submitShare(player, targetDifficulty, dayNumber, counter, salt);
+    function _submitValidShare(address player, uint256 dayNumber, uint256 targetWork, uint256 counter)
+        internal
+        returns (bytes32 salt, uint256 actualWork)
+    {
+        (salt, actualWork) = _findValidSalt(player, dayNumber, targetWork, counter, 0);
+        pool.submitShare(player, targetWork, dayNumber, counter, salt);
     }
 
     // =========================================================================
@@ -93,7 +79,7 @@ contract NFTIntegrationTest is Test {
     }
 
     function test_playerNFT_mintedOnFirstShare() public {
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
 
         assertTrue(playerNFT.isRegistered(player1));
         uint256 tokenId = uint256(uint160(player1));
@@ -101,8 +87,8 @@ contract NFTIntegrationTest is Test {
     }
 
     function test_playerNFT_idempotentOnSubsequentShares() public {
-        _submitValidShare(player1, 0, 16, 0);
-        _submitValidShare(player1, 0, 16, 1);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 2);
 
         uint256 tokenId = uint256(uint160(player1));
         assertEq(playerNFT.ownerOf(tokenId), player1);
@@ -110,8 +96,8 @@ contract NFTIntegrationTest is Test {
     }
 
     function test_playerNFT_twoPlayersGetSeparateNFTs() public {
-        _submitValidShare(player1, 0, 16, 0);
-        _submitValidShare(player2, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player2, 0, pool.MIN_SHARE_WORK(), 1);
 
         assertTrue(playerNFT.isRegistered(player1));
         assertTrue(playerNFT.isRegistered(player2));
@@ -120,7 +106,7 @@ contract NFTIntegrationTest is Test {
     }
 
     function test_playerNFT_transferable() public {
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
         uint256 tokenId = uint256(uint160(player1));
 
         vm.prank(player1);
@@ -140,7 +126,7 @@ contract NFTIntegrationTest is Test {
     // =========================================================================
 
     function test_registerCurrency_basic() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(12345)), 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(12345)), 0, pool.MIN_SHARE_WORK());
 
         assertTrue(currencyNFT.isRegistered(vanity));
         uint256 tokenId = uint256(uint160(vanity));
@@ -151,9 +137,9 @@ contract NFTIntegrationTest is Test {
         uint256 counter = 7;
         bytes32 salt = bytes32(uint256(99999));
         uint256 dayNumber = 0;
-        uint256 targetDifficulty = 20;
+        uint256 targetWork = 1_000_000;
 
-        address vanity = pool.registerCurrency(player1, counter, salt, dayNumber, targetDifficulty);
+        address vanity = pool.registerCurrency(player1, counter, salt, dayNumber, targetWork);
 
         uint256 tokenId = uint256(uint160(vanity));
         CurrencyNFT.CurrencyDiscovery memory disc = currencyNFT.getDiscovery(tokenId);
@@ -162,7 +148,7 @@ contract NFTIntegrationTest is Test {
         assertEq(disc.salt, salt);
         assertEq(disc.playerId, uint256(uint160(player1)));
         assertEq(disc.dayNumber, dayNumber);
-        assertEq(disc.targetDifficulty, targetDifficulty);
+        assertEq(disc.targetWork, targetWork);
         assertEq(disc.dayHash, pool.dayHashes(dayNumber), "dayHash should match pool's day hash");
         assertFalse(disc.deployed);
     }
@@ -172,9 +158,9 @@ contract NFTIntegrationTest is Test {
         bytes32 salt = bytes32(uint256(42));
         bytes32 dayHash = pool.dayHashes(0);
 
-        address expected = pool.computeVanityAddress(player1, counter, salt, 0, 16, dayHash);
+        address expected = pool.computeVanityAddress(player1, counter, salt, 0, pool.MIN_SHARE_WORK(), dayHash);
 
-        address actual = pool.registerCurrency(player1, counter, salt, 0, 16);
+        address actual = pool.registerCurrency(player1, counter, salt, 0, pool.MIN_SHARE_WORK());
 
         assertEq(actual, expected, "Registered address should match computed address");
     }
@@ -185,21 +171,23 @@ contract NFTIntegrationTest is Test {
         vm.expectEmit(true, false, false, false);
         emit MiningPool.CurrencyRegistered(playerId, address(0), 0, 0);
 
-        pool.registerCurrency(player1, 0, bytes32(uint256(100)), 0, 16);
+        pool.registerCurrency(player1, 0, bytes32(uint256(100)), 0, pool.MIN_SHARE_WORK());
     }
 
     function testRevert_registerCurrency_duplicateAddress() public {
+        uint256 minWork = pool.MIN_SHARE_WORK();
         bytes32 salt = bytes32(uint256(100));
-        pool.registerCurrency(player1, 0, salt, 0, 16);
+        pool.registerCurrency(player1, 0, salt, 0, minWork);
 
         // Same params → same address → should revert
         vm.expectRevert(MiningPool.CurrencyAlreadyRegistered.selector);
-        pool.registerCurrency(player1, 0, salt, 0, 16);
+        pool.registerCurrency(player1, 0, salt, 0, minWork);
     }
 
     function testRevert_registerCurrency_invalidDay() public {
+        uint256 minWork = pool.MIN_SHARE_WORK();
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
-        pool.registerCurrency(player1, 0, bytes32(uint256(100)), 5, 16);
+        pool.registerCurrency(player1, 0, bytes32(uint256(100)), 5, minWork);
     }
 
     function test_registerCurrency_thirdPartyRegistration() public {
@@ -207,7 +195,7 @@ contract NFTIntegrationTest is Test {
 
         // player2 registers a currency on behalf of player1 — NFT goes to player1
         vm.prank(player2);
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         uint256 tokenId = uint256(uint160(vanity));
         assertEq(currencyNFT.ownerOf(tokenId), player1, "NFT minted to PlayerNFT owner, not caller");
@@ -215,7 +203,7 @@ contract NFTIntegrationTest is Test {
 
     function test_registerCurrency_mintsToPlayerNFTOwner() public {
         // player1 submits a share (mints PlayerNFT)
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
 
         // player1 transfers PlayerNFT to player2
         uint256 playerTokenId = uint256(uint160(player1));
@@ -224,7 +212,7 @@ contract NFTIntegrationTest is Test {
 
         // Register a currency for player1's address — should go to player2 (current NFT owner)
         bytes32 salt = bytes32(uint256(42));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         uint256 currencyTokenId = uint256(uint160(vanity));
         assertEq(currencyNFT.ownerOf(currencyTokenId), player2, "CurrencyNFT goes to current PlayerNFT owner");
@@ -234,7 +222,7 @@ contract NFTIntegrationTest is Test {
         // player1 has never submitted a share — no PlayerNFT yet
         assertFalse(playerNFT.isRegistered(player1));
 
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(42)), 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(42)), 0, pool.MIN_SHARE_WORK());
 
         // PlayerNFT should have been lazy-minted
         assertTrue(playerNFT.isRegistered(player1));
@@ -244,7 +232,7 @@ contract NFTIntegrationTest is Test {
     }
 
     function test_registerCurrency_nftTransferable() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(100)), 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(100)), 0, pool.MIN_SHARE_WORK());
         uint256 tokenId = uint256(uint160(vanity));
 
         vm.prank(player1);
@@ -259,7 +247,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_basic() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -268,7 +256,7 @@ contract NFTIntegrationTest is Test {
         assertEq(address(token), vanity);
         assertEq(token.playerId(), uint256(uint160(player1)));
         assertEq(token.dayNumber(), 0);
-        assertEq(token.targetDifficulty(), 16);
+        assertEq(token.targetWork(), pool.MIN_SHARE_WORK());
         assertEq(token.counter(), 0);
         assertEq(token.dayHash(), pool.dayHashes(0), "Deployed token should store the day hash");
         assertEq(token.miningPool(), address(pool));
@@ -279,7 +267,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_markedAsDeployed() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -292,7 +280,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_emitsEvent() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.expectEmit(true, false, false, false);
         emit MiningPool.CurrencyDeployed(vanity, address(0), 0, 0);
@@ -304,7 +292,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_byNftTransferRecipient() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
         uint256 tokenId = uint256(uint160(vanity));
 
         vm.prank(player1);
@@ -319,7 +307,7 @@ contract NFTIntegrationTest is Test {
 
     function testRevert_deployCurrency_notOwner() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player2);
@@ -329,7 +317,7 @@ contract NFTIntegrationTest is Test {
 
     function testRevert_deployCurrency_alreadyDeployed() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -352,12 +340,12 @@ contract NFTIntegrationTest is Test {
 
     function test_fullFlow_mineRegisterDeploy() public {
         // 1. Player submits shares (mines)
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
         assertTrue(playerNFT.isRegistered(player1), "Player should have NFT after mining");
 
         // 2. Player discovers and registers a vanity address
         bytes32 salt = bytes32(uint256(777));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
         assertTrue(currencyNFT.isRegistered(vanity), "Currency should be registered");
 
         // 3. Player deploys the CurrencyToken at the vanity address
@@ -368,10 +356,7 @@ contract NFTIntegrationTest is Test {
         // Verify the full chain
         assertEq(address(token), vanity, "Token deployed at vanity address");
         assertEq(token.miningPool(), address(pool), "Token knows its pool");
-        assertTrue(
-            pool.getPlayerScoreAt(uint256(uint160(player1)), 0) > 0,
-            "Player has mining score"
-        );
+        assertTrue(pool.getPlayerScoreAt(uint256(uint160(player1)), 0) > 0, "Player has mining score");
         assertTrue(vanity.code.length > 0, "Vanity address should have deployed code");
     }
 }

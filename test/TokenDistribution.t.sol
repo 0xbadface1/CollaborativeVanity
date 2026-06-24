@@ -2,10 +2,10 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
+import {stdError} from "forge-std/StdError.sol";
 import {MiningPool} from "../src/MiningPool.sol";
 import {PlayerNFT} from "../src/PlayerNFT.sol";
 import {CurrencyToken} from "../src/CurrencyToken.sol";
-import {LeadingZeros} from "../src/libraries/LeadingZeros.sol";
 
 /// @title TokenDistributionTest
 /// @notice Tests for Phase 2 token distribution.
@@ -19,8 +19,6 @@ import {LeadingZeros} from "../src/libraries/LeadingZeros.sol";
 ///   Without this, repeated abi.encodePacked calls grow EVM memory until Foundry
 ///   hits MemoryOOG on longer searches.
 contract TokenDistributionTest is Test {
-    using LeadingZeros for bytes32;
-
     MiningPool public pool;
     PlayerNFT public playerNFT;
 
@@ -46,26 +44,26 @@ contract TokenDistributionTest is Test {
     //                              HELPERS
     // =========================================================================
 
-    /// @notice Find a salt whose CREATE2 hash satisfies MIN_SHARE_DIFFICULTY.
+    /// @notice Find a salt whose CREATE2 hash satisfies MIN_SHARE_WORK.
     /// @param player Player address committed in CurrencyToken initCode
     /// @param dayNumber Day committed in CurrencyToken initCode
-    /// @param targetDifficulty Target difficulty committed in CurrencyToken initCode
+    /// @param targetWork Target work committed in CurrencyToken initCode
     /// @param counter Counter committed in CurrencyToken initCode
     /// @param startSalt First integer salt to try
     /// @param dayHash Day hash committed in CurrencyToken initCode
     /// @return salt Matching CREATE2 salt
-    /// @return actualDifficulty Leading-zero difficulty of the matching hash
+    /// @return actualWork Expected work of the matching hash
     function _findValidSaltWithDayHash(
         address player,
         uint256 dayNumber,
-        uint256 targetDifficulty,
+        uint256 targetWork,
         uint256 counter,
         uint256 startSalt,
         bytes32 dayHash
-    ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
-        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
+    ) internal view returns (bytes32 salt, uint256 actualWork) {
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
         address poolAddr = address(pool);
-        uint256 minDiff = pool.MIN_SHARE_DIFFICULTY();
+        uint256 minWork = pool.MIN_SHARE_WORK();
 
         uint256 freeMemPtr;
         assembly { freeMemPtr := mload(0x40) }
@@ -75,9 +73,9 @@ contract TokenDistributionTest is Test {
             bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), poolAddr, salt, initCodeHash));
             assembly { mstore(0x40, freeMemPtr) }
 
-            actualDifficulty = create2Hash.countLeadingZeroBits();
-            if (actualDifficulty >= minDiff) {
-                return (salt, actualDifficulty);
+            actualWork = pool.hashToWork(create2Hash);
+            if (actualWork >= minWork) {
+                return (salt, actualWork);
             }
         }
 
@@ -102,24 +100,26 @@ contract TokenDistributionTest is Test {
             dayHash = _precomputeDayHash(dayNumber);
         }
 
-        (bytes32 salt,) = _findValidSaltWithDayHash(player, dayNumber, 16, counter, startSalt, dayHash);
-        pool.submitShare(player, 16, dayNumber, counter, salt);
+        (bytes32 salt,) =
+            _findValidSaltWithDayHash(player, dayNumber, pool.MIN_SHARE_WORK(), counter, startSalt, dayHash);
+        pool.submitShare(player, pool.MIN_SHARE_WORK(), dayNumber, counter, salt);
     }
 
-    /// @notice Submit a valid day-0 share with target difficulty 16.
+    /// @notice Submit a valid day-0 share with the minimum target work.
     /// @param player Player receiving score credit
     /// @param counter Per-player day counter
     function _submitDay0Share(address player, uint256 counter) internal {
-        (bytes32 salt,) = _findValidSaltWithDayHash(player, 0, 16, counter, counter * 1_000_000, pool.dayHashes(0));
-        pool.submitShare(player, 16, 0, counter, salt);
+        (bytes32 salt,) =
+            _findValidSaltWithDayHash(player, 0, pool.MIN_SHARE_WORK(), counter, counter * 1_000_000, pool.dayHashes(0));
+        pool.submitShare(player, pool.MIN_SHARE_WORK(), 0, counter, salt);
     }
 
     /// @notice Build a known day-0 score snapshot: player1 has one share,
     ///         player2 has two shares, and the pool includes the bootstrap score.
     function _buildDay0Scores() internal {
-        _submitDay0Share(player1, 0);
-        _submitDay0Share(player2, 0);
+        _submitDay0Share(player1, 1);
         _submitDay0Share(player2, 1);
+        _submitDay0Share(player2, 2);
     }
 
     /// @notice Publish day 1 and register a day-1 discovery for player1.
@@ -128,7 +128,7 @@ contract TokenDistributionTest is Test {
     function _registerDay1Currency(bytes32 salt) internal returns (address vanity) {
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         pool.getCurrentDayHash();
-        vanity = pool.registerCurrency(player1, 100, salt, 1, 16);
+        vanity = pool.registerCurrency(player1, 100, salt, 1, pool.MIN_SHARE_WORK());
     }
 
     /// @notice Register and deploy a day-1 currency with the standard test supply.
@@ -141,24 +141,22 @@ contract TokenDistributionTest is Test {
         token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
     }
 
-    /// @notice Compute the actual leading-zero difficulty of a registered vanity address.
+    /// @notice Compute the actual work of a registered vanity address.
     /// @param player Player committed in CurrencyToken initCode
     /// @param dayNumber Day committed in CurrencyToken initCode
-    /// @param targetDifficulty Target difficulty committed in CurrencyToken initCode
+    /// @param targetWork Target work committed in CurrencyToken initCode
     /// @param counter Counter committed in CurrencyToken initCode
     /// @param salt CREATE2 salt
-    /// @return Leading-zero difficulty of the CREATE2 hash
-    function _vanityDifficulty(
-        address player,
-        uint256 dayNumber,
-        uint256 targetDifficulty,
-        uint256 counter,
-        bytes32 salt
-    ) internal view returns (uint256) {
+    /// @return Expected work of the CREATE2 hash
+    function _vanityWork(address player, uint256 dayNumber, uint256 targetWork, uint256 counter, bytes32 salt)
+        internal
+        view
+        returns (uint256)
+    {
         bytes32 dayHash = pool.dayHashes(dayNumber);
-        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
         bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(pool), salt, initCodeHash));
-        return create2Hash.countLeadingZeroBits();
+        return pool.hashToWork(create2Hash);
     }
 
     /// @notice Mock MiningPool score read for directly deployed CurrencyToken tests.
@@ -195,14 +193,15 @@ contract TokenDistributionTest is Test {
     }
 
     function testRevert_claim_beforeInitialized() public {
-        CurrencyToken token = new CurrencyToken(uint256(uint160(player1)), 0, 16, 0, bytes32(uint256(123)));
+        CurrencyToken token =
+            new CurrencyToken(uint256(uint160(player1)), 0, pool.MIN_SHARE_WORK(), 0, bytes32(uint256(123)));
 
         vm.expectRevert(CurrencyToken.DistributionNotInitialized.selector);
         token.claim(uint256(uint160(player1)));
     }
 
     function testRevert_deployCurrency_beforeSnapshotDayPasses() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(502)), 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(502)), 0, pool.MIN_SHARE_WORK());
 
         vm.prank(player1);
         vm.expectRevert(abi.encodeWithSelector(MiningPool.DistributionSnapshotNotFrozen.selector, 0, 0));
@@ -210,7 +209,7 @@ contract TokenDistributionTest is Test {
     }
 
     function testRevert_deployCurrency_zeroTotalSupply() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(503)), 0, 16);
+        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(503)), 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -282,7 +281,7 @@ contract TokenDistributionTest is Test {
     function testRevert_claim_zeroScoreNonDiscovererGetsNothing() public {
         _buildDay0Scores();
         uint256 playerId = uint256(uint160(player3));
-        pool.registerCurrency(player3, 0, bytes32(uint256(900)), 0, 16);
+        pool.registerCurrency(player3, 0, bytes32(uint256(900)), 0, pool.MIN_SHARE_WORK());
 
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(508)));
 
@@ -307,7 +306,7 @@ contract TokenDistributionTest is Test {
         uint256 poolScore = pool.getPoolScoreAt(0);
 
         address vanity = _registerDay1Currency(bytes32(uint256(510)));
-        _submitShare(player2, 1, 0, 3_000_000);
+        _submitShare(player2, 1, 1, 3_000_000);
 
         vm.prank(player1);
         CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
@@ -328,7 +327,7 @@ contract TokenDistributionTest is Test {
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(511)));
 
         vm.warp(pool.dayZeroTimestamp() + 2 days);
-        _submitShare(player2, 2, 0, 4_000_000);
+        _submitShare(player2, 2, 1, 4_000_000);
 
         uint256 expected = DISTRIBUTION_SUPPLY * 99 * playerScore / (100 * poolScore);
         uint256 claimed = token.claim(playerId);
@@ -351,13 +350,13 @@ contract TokenDistributionTest is Test {
     }
 
     function test_claim_usesFullPrecisionMulDivForLargeValues() public {
-        _submitDay0Share(player1, 0);
+        _submitDay0Share(player1, 1);
         uint256 playerId = uint256(uint160(player1));
         uint256 hugeSupply = type(uint256).max / 99;
         mockPlayerScore = 1 << 200;
         mockPoolScore = mockPlayerScore;
 
-        CurrencyToken token = new CurrencyToken(playerId, 0, 16, 0, pool.dayHashes(0));
+        CurrencyToken token = new CurrencyToken(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
         token.initializeDistribution(hugeSupply);
 
         uint256 expectedProportional = hugeSupply * 99 / 100;
@@ -368,18 +367,31 @@ contract TokenDistributionTest is Test {
         assertEq(token.balanceOf(player1), claimed);
     }
 
+    function testRevert_claim_assertsPlayerScoreNotAbovePoolScore() public {
+        _submitDay0Share(player1, 1);
+        uint256 playerId = uint256(uint160(player1));
+        mockPlayerScore = 2_000;
+        mockPoolScore = 1_000;
+
+        CurrencyToken token = new CurrencyToken(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
+        token.initializeDistribution(DISTRIBUTION_SUPPLY);
+
+        vm.expectRevert(stdError.assertionError);
+        token.claim(playerId);
+    }
+
     // =========================================================================
     //                          INTEGRATION TESTS
     // =========================================================================
 
     function test_fullFlow_multiPlayerMultiDay() public {
-        _submitShare(player1, 0, 0, 0);
-        _submitShare(player2, 0, 0, 1_000_000);
+        _submitShare(player1, 0, 1, 0);
+        _submitShare(player2, 0, 1, 1_000_000);
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        _submitShare(player1, 1, 0, 2_000_000);
-        _submitShare(player2, 1, 0, 3_000_000);
-        _submitShare(player3, 1, 0, 4_000_000);
+        _submitShare(player1, 1, 1, 2_000_000);
+        _submitShare(player2, 1, 1, 3_000_000);
+        _submitShare(player3, 1, 1, 4_000_000);
 
         uint256 p1Id = uint256(uint160(player1));
         uint256 p2Id = uint256(uint160(player2));
@@ -392,7 +404,7 @@ contract TokenDistributionTest is Test {
 
         vm.warp(pool.dayZeroTimestamp() + 2 days);
         pool.getCurrentDayHash();
-        address vanity = pool.registerCurrency(player1, 200, bytes32(uint256(513)), 2, 16);
+        address vanity = pool.registerCurrency(player1, 200, bytes32(uint256(513)), 2, pool.MIN_SHARE_WORK());
 
         vm.prank(player1);
         CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
@@ -420,7 +432,7 @@ contract TokenDistributionTest is Test {
         (CurrencyToken tokenOne,) = _deployDay1Currency(bytes32(uint256(514)));
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        _submitShare(player3, 1, 0, 5_000_000);
+        _submitShare(player3, 1, 1, 5_000_000);
 
         uint256 currencyTwoP2Score = pool.getPlayerScoreAt(p2Id, 1);
         uint256 currencyTwoP3Score = pool.getPlayerScoreAt(p3Id, 1);
@@ -428,16 +440,15 @@ contract TokenDistributionTest is Test {
 
         vm.warp(pool.dayZeroTimestamp() + 2 days);
         pool.getCurrentDayHash();
-        address vanityTwo = pool.registerCurrency(player2, 300, bytes32(uint256(515)), 2, 16);
+        address vanityTwo = pool.registerCurrency(player2, 300, bytes32(uint256(515)), 2, pool.MIN_SHARE_WORK());
 
         vm.prank(player2);
         CurrencyToken tokenTwo = pool.deployCurrency(vanityTwo, SECOND_DISTRIBUTION_SUPPLY);
 
         uint256 tokenOneP2Expected = DISTRIBUTION_SUPPLY * 99 * currencyOneP2Score / (100 * currencyOnePoolScore);
-        uint256 tokenTwoP2Expected = SECOND_DISTRIBUTION_SUPPLY * 99 * currencyTwoP2Score
-            / (100 * currencyTwoPoolScore) + SECOND_DISTRIBUTION_SUPPLY / 100;
-        uint256 tokenTwoP3Expected = SECOND_DISTRIBUTION_SUPPLY * 99 * currencyTwoP3Score
-            / (100 * currencyTwoPoolScore);
+        uint256 tokenTwoP2Expected = SECOND_DISTRIBUTION_SUPPLY * 99 * currencyTwoP2Score / (100 * currencyTwoPoolScore)
+            + SECOND_DISTRIBUTION_SUPPLY / 100;
+        uint256 tokenTwoP3Expected = SECOND_DISTRIBUTION_SUPPLY * 99 * currencyTwoP3Score / (100 * currencyTwoPoolScore);
 
         assertEq(tokenOne.claim(p2Id), tokenOneP2Expected);
         assertEq(tokenOne.balanceOf(player2), tokenOneP2Expected);
@@ -455,22 +466,22 @@ contract TokenDistributionTest is Test {
     //                          AUTO-BOOST TESTS
     // =========================================================================
 
-    function test_deployCurrency_autoBoostsIntegratedDifficultyOnly() public {
+    function test_deployCurrency_autoBoostsIntegratedWorkOnly() public {
         _buildDay0Scores();
         bytes32 salt = bytes32(uint256(516));
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         pool.getCurrentDayHash();
-        uint256 difficulty = _vanityDifficulty(player1, 1, 16, 100, salt);
+        uint256 vanityWork = _vanityWork(player1, 1, pool.MIN_SHARE_WORK(), 100, salt);
 
-        uint256 difficultyBefore = pool.totalIntegratedDifficulty();
+        uint256 workBefore = pool.totalIntegratedWork();
         uint256 shareCountBefore = pool.totalShareCount();
         uint256 poolScoreBefore = pool.getPoolScoreAt(0);
 
-        address vanity = pool.registerCurrency(player1, 100, salt, 1, 16);
+        address vanity = pool.registerCurrency(player1, 100, salt, 1, pool.MIN_SHARE_WORK());
         vm.prank(player1);
         pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
-        assertEq(pool.totalIntegratedDifficulty(), difficultyBefore + difficulty);
+        assertEq(pool.totalIntegratedWork(), workBefore + vanityWork);
         assertEq(pool.totalShareCount(), shareCountBefore, "auto-boost must not add a share");
         assertEq(pool.getPoolScoreAt(0), poolScoreBefore, "auto-boost must not alter checkpoints");
     }

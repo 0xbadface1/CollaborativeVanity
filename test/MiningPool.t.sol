@@ -4,7 +4,6 @@ pragma solidity ^0.8.28;
 import {Test, console} from "forge-std/Test.sol";
 import {MiningPool} from "../src/MiningPool.sol";
 import {CurrencyToken} from "../src/CurrencyToken.sol";
-import {LeadingZeros} from "../src/libraries/LeadingZeros.sol";
 
 /// @title MiningPoolTest
 /// @notice Foundry test suite for MiningPool.
@@ -24,8 +23,6 @@ import {LeadingZeros} from "../src/libraries/LeadingZeros.sol";
 ///   Each (counter, salt) pair produces a unique hash. The counter defines which
 ///   address space, the salt searches within it.
 contract MiningPoolTest is Test {
-    using LeadingZeros for bytes32;
-
     MiningPool public pool;
 
     address public player1;
@@ -46,8 +43,8 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     /// @notice Brute-force search for a salt that produces a valid share.
-    ///         Iterates salt values until the CREATE2 hash has enough leading zeros.
-    ///         With MIN_SHARE_DIFFICULTY = 16, needs ~65,536 attempts on average.
+    ///         Iterates salt values until the CREATE2 hash has enough work.
+    ///         With MIN_SHARE_WORK = 65,536, needs ~65,536 attempts on average.
     ///
     ///         Uses free-memory-pointer reset trick to avoid MemoryOOG — without it,
     ///         each abi.encodePacked allocates new memory, and ~65K iterations would
@@ -55,15 +52,13 @@ contract MiningPoolTest is Test {
     ///
     ///         Looks up the dayHash from the pool. For days whose hash hasn't been
     ///         published yet (future days), use the overload that accepts an explicit dayHash.
-    function _findValidSalt(
-        address player,
-        uint256 dayNumber,
-        uint256 targetDifficulty,
-        uint256 counter,
-        uint256 startSalt
-    ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
+    function _findValidSalt(address player, uint256 dayNumber, uint256 targetWork, uint256 counter, uint256 startSalt)
+        internal
+        view
+        returns (bytes32 salt, uint256 actualWork)
+    {
         bytes32 dayHash = pool.dayHashes(dayNumber);
-        return _findValidSaltWithDayHash(player, dayNumber, targetDifficulty, counter, startSalt, dayHash);
+        return _findValidSaltWithDayHash(player, dayNumber, targetWork, counter, startSalt, dayHash);
     }
 
     /// @notice Overload that accepts an explicit dayHash. Used when testing submissions
@@ -72,14 +67,14 @@ contract MiningPoolTest is Test {
     function _findValidSaltWithDayHash(
         address player,
         uint256 dayNumber,
-        uint256 targetDifficulty,
+        uint256 targetWork,
         uint256 counter,
         uint256 startSalt,
         bytes32 dayHash
-    ) internal view returns (bytes32 salt, uint256 actualDifficulty) {
-        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetDifficulty, counter, dayHash);
+    ) internal view returns (bytes32 salt, uint256 actualWork) {
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
         address poolAddr = address(pool);
-        uint256 minDiff = pool.MIN_SHARE_DIFFICULTY();
+        uint256 minWork = pool.MIN_SHARE_WORK();
 
         // Snapshot the free memory pointer — we reset it each iteration
         // so abi.encodePacked reuses the same scratch space.
@@ -88,54 +83,70 @@ contract MiningPoolTest is Test {
 
         for (uint256 i = startSalt; i < startSalt + 10_000_000; i++) {
             salt = bytes32(i);
-            bytes32 create2Hash = keccak256(abi.encodePacked(
-                bytes1(0xff),
-                poolAddr,
-                salt,
-                initCodeHash
-            ));
+            bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), poolAddr, salt, initCodeHash));
 
             // Reset free memory pointer to prevent memory growth
             assembly { mstore(0x40, freeMemPtr) }
 
-            actualDifficulty = create2Hash.countLeadingZeroBits();
-            if (actualDifficulty >= minDiff) {
-                return (salt, actualDifficulty);
+            actualWork = pool.hashToWork(create2Hash);
+            if (actualWork >= minWork) {
+                return (salt, actualWork);
             }
         }
         revert("_findValidSalt: exhausted search space");
+    }
+
+    function _findBelowMinSalt(address player, uint256 dayNumber, uint256 targetWork, uint256 counter)
+        internal
+        view
+        returns (bytes32 salt)
+    {
+        bytes32 dayHash = pool.dayHashes(dayNumber);
+        bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
+        address poolAddr = address(pool);
+        uint256 minWork = pool.MIN_SHARE_WORK();
+
+        uint256 freeMemPtr;
+        assembly { freeMemPtr := mload(0x40) }
+
+        for (uint256 i = 0; i < 1_000_000; i++) {
+            salt = bytes32(i);
+            bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), poolAddr, salt, initCodeHash));
+            assembly { mstore(0x40, freeMemPtr) }
+
+            if (pool.hashToWork(create2Hash) < minWork) {
+                return salt;
+            }
+        }
+        revert("_findBelowMinSalt: exhausted search space");
+    }
+
+    function _minShareWork() internal view returns (uint256) {
+        return pool.MIN_SHARE_WORK();
     }
 
     /// @notice Precompute the dayHash that MiningPool._advanceDay() will publish
     ///         for a given day. Uses the same formula: keccak256(pool, prevrandao, day).
     ///         Useful for finding valid salts BEFORE the day has been advanced on-chain.
     function _precomputeDayHash(uint256 dayNumber) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked(
-            address(pool),
-            block.prevrandao,
-            dayNumber
-        ));
+        return keccak256(abi.encodePacked(address(pool), block.prevrandao, dayNumber));
     }
 
     /// @notice Submit a valid share as a given player. Convenience wrapper.
     ///         If the dayHash for the given day hasn't been published yet (e.g. when
     ///         submitting on a new day that triggers _advanceDay), this automatically
     ///         precomputes the expected dayHash using _precomputeDayHash().
-    function _submitValidShare(
-        address player,
-        uint256 dayNumber,
-        uint256 targetDifficulty,
-        uint256 counter
-    ) internal returns (bytes32 salt, uint256 actualDifficulty) {
+    function _submitValidShare(address player, uint256 dayNumber, uint256 targetWork, uint256 counter)
+        internal
+        returns (bytes32 salt, uint256 actualWork)
+    {
         bytes32 dayHash = pool.dayHashes(dayNumber);
         if (dayHash == bytes32(0)) {
             // Day hash not published yet — precompute what _advanceDay will produce.
             dayHash = _precomputeDayHash(dayNumber);
         }
-        (salt, actualDifficulty) = _findValidSaltWithDayHash(
-            player, dayNumber, targetDifficulty, counter, 0, dayHash
-        );
-        pool.submitShare(player, targetDifficulty, dayNumber, counter, salt);
+        (salt, actualWork) = _findValidSaltWithDayHash(player, dayNumber, targetWork, counter, 0, dayHash);
+        pool.submitShare(player, targetWork, dayNumber, counter, salt);
     }
 
     // =========================================================================
@@ -158,8 +169,8 @@ contract MiningPoolTest is Test {
 
     function test_constructor_poolStartsWithBootstrapBaseline() public view {
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT());
-        assertEq(pool.totalIntegratedDifficulty(), pool.BOOTSTRAP_INTEGRATED_DIFFICULTY());
-        assertEq(pool.getPoolScoreAt(0), pool.BOOTSTRAP_INTEGRATED_DIFFICULTY());
+        assertEq(pool.totalIntegratedWork(), pool.BOOTSTRAP_INTEGRATED_WORK());
+        assertEq(pool.getPoolScoreAt(0), pool.BOOTSTRAP_INTEGRATED_WORK());
     }
 
     // =========================================================================
@@ -167,45 +178,50 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     function test_submitShare_validShare() public {
-        (, uint256 actualDifficulty) = _submitValidShare(player1, 0, 16, 0);
+        (, uint256 actualWork) = _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
 
         uint256 playerId = uint256(uint160(player1));
         uint256 playerScore = pool.getPlayerScoreAt(playerId, 0);
         assertTrue(playerScore > 0, "Player should have a score after valid share");
 
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1);
-        assertEq(pool.totalIntegratedDifficulty(), pool.BOOTSTRAP_INTEGRATED_DIFFICULTY() + actualDifficulty);
+        assertEq(pool.totalIntegratedWork(), pool.BOOTSTRAP_INTEGRATED_WORK() + actualWork);
 
-        assertTrue(pool.hasSubmittedOnDay(playerId, 0));
-        assertEq(pool.lastShareCounter(playerId, 0), 0);
+        assertEq(pool.lastShareCounter(playerId, 0), 1);
     }
 
     function test_submitShare_emitsEvent() public {
-        (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 0);
+        (bytes32 salt,) = _findValidSalt(player1, 0, pool.MIN_SHARE_WORK(), 1, 0);
         uint256 playerId = uint256(uint160(player1));
 
         vm.expectEmit(true, true, false, false);
         emit MiningPool.ShareSubmitted(
-            playerId, 0,
-            0, bytes32(0), 0, 0, 0, false // data fields — not checked
+            playerId,
+            0,
+            0,
+            bytes32(0),
+            0,
+            0,
+            0,
+            false // data fields — not checked
         );
 
-        pool.submitShare(player1, 16, 0, 0, salt);
+        pool.submitShare(player1, pool.MIN_SHARE_WORK(), 0, 1, salt);
     }
 
     function test_submitShare_multipleSharesSameDay() public {
-        // counter=0, then counter=1 — different address spaces, independent salt search
-        _submitValidShare(player1, 0, 16, 0);
-        _submitValidShare(player1, 0, 16, 1);
+        // counter=1, then counter=2 — different address spaces, independent salt search
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 2);
 
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 2);
-        assertEq(pool.lastShareCounter(uint256(uint160(player1)), 0), 1);
+        assertEq(pool.lastShareCounter(uint256(uint160(player1)), 0), 2);
     }
 
     function test_submitShare_twoPlayersIndependent() public {
         // Two players can use the same counter value — they have different address spaces
-        _submitValidShare(player1, 0, 16, 0);
-        _submitValidShare(player2, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player2, 0, pool.MIN_SHARE_WORK(), 1);
 
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 2);
 
@@ -218,9 +234,9 @@ contract MiningPoolTest is Test {
     function test_submitShare_anySaltWithValidCounter() public {
         // Salt is free — player can use any bytes32 value
         // Search for a valid salt starting from a large offset
-        (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 5_000_000);
+        (bytes32 salt,) = _findValidSalt(player1, 0, pool.MIN_SHARE_WORK(), 1, 5_000_000);
 
-        pool.submitShare(player1, 16, 0, 0, salt);
+        pool.submitShare(player1, pool.MIN_SHARE_WORK(), 0, 1, salt);
 
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1);
     }
@@ -229,55 +245,68 @@ contract MiningPoolTest is Test {
     //                    COUNTER ORDERING TESTS
     // =========================================================================
 
-    function testRevert_submitShare_counterNotIncreasing() public {
-        _submitValidShare(player1, 0, 16, 0);
-
-        // Try counter=0 again — should revert (must be strictly increasing)
-        (bytes32 salt,) = _findValidSalt(player1, 0, 16, 0, 999_999);
+    function testRevert_submitShare_firstCounterZero() public {
+        // Counter 0 is reserved as "nothing submitted yet" — the first share of a
+        // day must use counter >= 1, so a counter-0 first submission must revert.
+        uint256 minWork = _minShareWork();
+        (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 0, 0);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
-        pool.submitShare(player1, 16, 0, 0, salt);
+        pool.submitShare(player1, minWork, 0, 0, salt);
+    }
+
+    function testRevert_submitShare_counterNotIncreasing() public {
+        uint256 minWork = _minShareWork();
+        _submitValidShare(player1, 0, minWork, 1);
+
+        // Try counter=1 again — should revert (must be strictly increasing)
+        (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 999_999);
+        vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
+        pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
     function testRevert_submitShare_counterLowerThanPrevious() public {
-        _submitValidShare(player1, 0, 16, 5);
+        uint256 minWork = _minShareWork();
+        _submitValidShare(player1, 0, minWork, 5);
 
         // Try counter=3 (lower than 5) — should revert
-        (bytes32 salt,) = _findValidSalt(player1, 0, 16, 3, 0);
+        (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 3, 0);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
-        pool.submitShare(player1, 16, 0, 3, salt);
+        pool.submitShare(player1, minWork, 0, 3, salt);
     }
 
     function test_submitShare_counterGapsAllowed() public {
-        _submitValidShare(player1, 0, 16, 0);
-        _submitValidShare(player1, 0, 16, 1000); // gap from 0 to 1000
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1000); // gap from 1 to 1000
 
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 2);
         assertEq(pool.lastShareCounter(uint256(uint160(player1)), 0), 1000);
     }
 
     // =========================================================================
-    //                    DIFFICULTY VALIDATION TESTS
+    //                       WORK VALIDATION TESTS
     // =========================================================================
 
-    function testRevert_submitShare_belowMinDifficulty() public {
-        // A random salt will almost certainly produce < 16 leading zeros
-        vm.expectRevert(MiningPool.BelowMinDifficulty.selector);
-        pool.submitShare(player1, 16, 0, 0, bytes32(uint256(42)));
+    function testRevert_submitShare_belowMinWork() public {
+        uint256 minWork = _minShareWork();
+        bytes32 salt = _findBelowMinSalt(player1, 0, minWork, 1);
+
+        vm.expectRevert(MiningPool.BelowMinWork.selector);
+        pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
     function test_submitShare_invalidShare_belowTarget() public {
-        // target=200 — any found salt will have actual difficulty ~16-25, far below 200
+        uint256 unreachableTargetWork = 1 << 128;
         uint256 player2Id = uint256(uint160(player2));
 
         // Build some pool state first
-        _submitValidShare(player1, 0, 16, 0);
-        uint256 expectedAverage = pool.totalIntegratedDifficulty() / pool.totalShareCount();
-        uint256 maxCredit = pool.totalIntegratedDifficulty() / pool.MAX_SHARE_CREDIT_DIVISOR();
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        uint256 expectedAverage = pool.totalIntegratedWork() / pool.totalShareCount();
+        uint256 maxCredit = pool.totalIntegratedWork() / pool.MAX_SHARE_CREDIT_DIVISOR();
         uint256 expectedCredit = expectedAverage < maxCredit ? expectedAverage : maxCredit;
 
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
-        (bytes32 salt,) = _findValidSalt(player2, 0, 200, 0, 0);
-        pool.submitShare(player2, 200, 0, 0, salt);
+        (bytes32 salt,) = _findValidSalt(player2, 0, unreachableTargetWork, 1, 0);
+        pool.submitShare(player2, unreachableTargetWork, 0, 1, salt);
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
 
         uint256 creditAwarded = scoreAfter - scoreBefore;
@@ -290,59 +319,55 @@ contract MiningPoolTest is Test {
 
     function test_submitShare_firstShareEver_getsTargetCredit() public {
         uint256 playerId = uint256(uint160(player1));
-        (bytes32 salt, uint256 actualDifficulty) = _findValidSalt(player1, 0, 16, 0, 0);
+        (bytes32 salt, uint256 actualWork) = _findValidSalt(player1, 0, pool.MIN_SHARE_WORK(), 1, 0);
 
-        pool.submitShare(player1, 16, 0, 0, salt);
+        pool.submitShare(player1, pool.MIN_SHARE_WORK(), 0, 1, salt);
 
         uint256 playerScore = pool.getPlayerScoreAt(playerId, 0);
-        if (actualDifficulty >= 16) {
-            assertEq(playerScore, 16, "First valid share credit = targetDifficulty");
-        }
+        assertGe(actualWork, pool.MIN_SHARE_WORK());
+        assertEq(playerScore, pool.MIN_SHARE_WORK(), "First valid share credit = targetWork");
     }
 
-    function test_submitShare_poolGetsFullActualDifficulty() public {
-        (, uint256 actualDiff) = _submitValidShare(player1, 0, 16, 0);
+    function test_submitShare_poolGetsFullActualWork() public {
+        (, uint256 actualWork) = _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
 
         assertEq(
-            pool.totalIntegratedDifficulty(),
-            pool.BOOTSTRAP_INTEGRATED_DIFFICULTY() + actualDiff,
-            "Pool should get full uncapped actual difficulty"
+            pool.totalIntegratedWork(),
+            pool.BOOTSTRAP_INTEGRATED_WORK() + actualWork,
+            "Pool should get full uncapped actual work"
         );
     }
 
     function test_submitShare_invalidShare_getsPoolAverage_multipleShares() public {
-        // Build up pool with 3 valid shares from player1
-        for (uint256 i = 0; i < 3; i++) {
-            _submitValidShare(player1, 0, 16, i);
+        // Build up pool with 3 valid shares from player1 (counters 1..3)
+        for (uint256 i = 1; i <= 3; i++) {
+            _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), i);
         }
 
-        uint256 expectedAverage = pool.totalIntegratedDifficulty() / pool.totalShareCount();
-        uint256 maxCredit = pool.totalIntegratedDifficulty() / pool.MAX_SHARE_CREDIT_DIVISOR();
+        uint256 expectedAverage = pool.totalIntegratedWork() / pool.totalShareCount();
+        uint256 maxCredit = pool.totalIntegratedWork() / pool.MAX_SHARE_CREDIT_DIVISOR();
         uint256 expectedCredit = expectedAverage < maxCredit ? expectedAverage : maxCredit;
         uint256 player2Id = uint256(uint160(player2));
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
 
-        // Submit invalid share as player2 (target=200, actual will be ~16)
-        (bytes32 salt,) = _findValidSalt(player2, 0, 200, 0, 0);
-        pool.submitShare(player2, 200, 0, 0, salt);
+        uint256 unreachableTargetWork = 1 << 128;
+        (bytes32 salt,) = _findValidSalt(player2, 0, unreachableTargetWork, 1, 0);
+        pool.submitShare(player2, unreachableTargetWork, 0, 1, salt);
 
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
-        assertEq(
-            scoreAfter - scoreBefore,
-            expectedCredit,
-            "Invalid share credit should equal capped pool average"
-        );
+        assertEq(scoreAfter - scoreBefore, expectedCredit, "Invalid share credit should equal capped pool average");
     }
 
     function test_submitShare_invalidShare_creditCappedAtOnePercent() public {
         uint256 player2Id = uint256(uint160(player2));
 
-        uint256 averageCredit = pool.totalIntegratedDifficulty() / pool.totalShareCount();
-        uint256 maxCredit = pool.totalIntegratedDifficulty() / pool.MAX_SHARE_CREDIT_DIVISOR();
+        uint256 averageCredit = pool.totalIntegratedWork() / pool.totalShareCount();
+        uint256 maxCredit = pool.totalIntegratedWork() / pool.MAX_SHARE_CREDIT_DIVISOR();
         assertGt(averageCredit, maxCredit, "test setup should expose cap");
 
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
-        _submitValidShare(player2, 0, 200, 0);
+        uint256 unreachableTargetWork = 1 << 128;
+        _submitValidShare(player2, 0, unreachableTargetWork, 1);
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
 
         assertEq(scoreAfter - scoreBefore, maxCredit, "Invalid share credit should be capped");
@@ -363,30 +388,30 @@ contract MiningPoolTest is Test {
 
     function test_dayAdvancement_submissionTriggersAdvance() public {
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        _submitValidShare(player1, 1, 16, 0);
+        _submitValidShare(player1, 1, pool.MIN_SHARE_WORK(), 1);
 
         assertEq(pool.currentDay(), 1);
         assertTrue(pool.dayHashes(1) != bytes32(0), "Day 1 hash should exist");
     }
 
     function test_dayAdvancement_snapshotsFrozenState() public {
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
         uint256 day0ShareCount = pool.totalShareCount();
-        uint256 day0Difficulty = pool.totalIntegratedDifficulty();
+        uint256 day0Work = pool.totalIntegratedWork();
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        _submitValidShare(player1, 1, 16, 0);
+        _submitValidShare(player1, 1, pool.MIN_SHARE_WORK(), 1);
 
-        (uint256 snapShares, uint256 snapDifficulty) = pool.daySnapshots(0);
+        (uint256 snapShares, uint256 snapWork) = pool.daySnapshots(0);
         assertEq(snapShares, day0ShareCount, "Snapshot share count should match day 0 end");
-        assertEq(snapDifficulty, day0Difficulty, "Snapshot difficulty should match day 0 end");
+        assertEq(snapWork, day0Work, "Snapshot work should match day 0 end");
     }
 
     function test_dayAdvancement_multiDayGap() public {
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
 
         vm.warp(pool.dayZeroTimestamp() + 5 days);
-        _submitValidShare(player1, 5, 16, 0);
+        _submitValidShare(player1, 5, pool.MIN_SHARE_WORK(), 1);
 
         assertEq(pool.currentDay(), 5);
         assertTrue(pool.dayHashes(5) != bytes32(0));
@@ -404,7 +429,7 @@ contract MiningPoolTest is Test {
         vm.expectEmit(true, false, false, false);
         emit MiningPool.DayAdvanced(1, bytes32(0));
 
-        _submitValidShare(player1, 1, 16, 0);
+        _submitValidShare(player1, 1, pool.MIN_SHARE_WORK(), 1);
     }
 
     // =========================================================================
@@ -412,18 +437,20 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     function testRevert_submitShare_futureDayNumber() public {
+        uint256 minWork = _minShareWork();
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
-        pool.submitShare(player1, 16, 1, 0, bytes32(uint256(42)));
+        pool.submitShare(player1, minWork, 1, 0, bytes32(uint256(42)));
     }
 
     function testRevert_submitShare_skippedDayNumber() public {
         vm.warp(pool.dayZeroTimestamp() + 5 days);
-        _submitValidShare(player1, 5, 16, 0);
+        _submitValidShare(player1, 5, pool.MIN_SHARE_WORK(), 1);
 
         // Day 3 was skipped — no hash exists
-        (bytes32 salt,) = _findValidSalt(player1, 3, 16, 0, 0);
+        uint256 minWork = _minShareWork();
+        (bytes32 salt,) = _findValidSalt(player1, 3, minWork, 0, 0);
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
-        pool.submitShare(player1, 16, 3, 0, salt);
+        pool.submitShare(player1, minWork, 3, 0, salt);
     }
 
     // =========================================================================
@@ -433,8 +460,8 @@ contract MiningPoolTest is Test {
     function test_checkpoints_playerScoreCumulative() public {
         uint256 playerId = uint256(uint160(player1));
 
-        for (uint256 i = 0; i < 3; i++) {
-            _submitValidShare(player1, 0, 16, i);
+        for (uint256 i = 1; i <= 3; i++) {
+            _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), i);
         }
 
         uint256 scoreAfter3 = pool.getPlayerScoreAt(playerId, 0);
@@ -444,11 +471,11 @@ contract MiningPoolTest is Test {
     function test_checkpoints_scoreAtPastDay() public {
         uint256 playerId = uint256(uint160(player1));
 
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
         uint256 day0Score = pool.getPlayerScoreAt(playerId, 0);
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
-        _submitValidShare(player1, 1, 16, 0);
+        _submitValidShare(player1, 1, pool.MIN_SHARE_WORK(), 1);
         uint256 day1Score = pool.getPlayerScoreAt(playerId, 1);
 
         assertTrue(day1Score > day0Score, "Cumulative score should grow");
@@ -456,8 +483,8 @@ contract MiningPoolTest is Test {
     }
 
     function test_checkpoints_poolScoreTracksAllPlayers() public {
-        _submitValidShare(player1, 0, 16, 0);
-        _submitValidShare(player2, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
+        _submitValidShare(player2, 0, pool.MIN_SHARE_WORK(), 1);
 
         uint256 id1 = uint256(uint160(player1));
         uint256 id2 = uint256(uint160(player2));
@@ -467,16 +494,14 @@ contract MiningPoolTest is Test {
         uint256 p2Score = pool.getPlayerScoreAt(id2, 0);
 
         assertEq(
-            poolScore,
-            p1Score + p2Score + pool.BOOTSTRAP_INTEGRATED_DIFFICULTY(),
-            "Pool score = player scores plus bootstrap"
+            poolScore, p1Score + p2Score + pool.BOOTSTRAP_INTEGRATED_WORK(), "Pool score = player scores plus bootstrap"
         );
     }
 
     function test_checkpoints_lookupSkippedDayReturnsPrevious() public {
         uint256 playerId = uint256(uint160(player1));
 
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
         uint256 day0Score = pool.getPlayerScoreAt(playerId, 0);
 
         vm.warp(pool.dayZeroTimestamp() + 5 days);
@@ -500,15 +525,15 @@ contract MiningPoolTest is Test {
 
     function test_getInitCodeHash_deterministic() public view {
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
         assertEq(hash1, hash2);
     }
 
     function test_getInitCodeHash_differentPlayers() public view {
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
-        bytes32 hash2 = pool.getInitCodeHash(player2, 0, 16, 0, dayHash);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player2, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
         assertTrue(hash1 != hash2, "Different players should get different initCodeHashes");
     }
 
@@ -517,33 +542,33 @@ contract MiningPoolTest is Test {
         // because dayNumber itself is encoded. In practice, different days also have
         // different dayHashes, further differentiating them.
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 1, 16, 0, dayHash);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 1, pool.MIN_SHARE_WORK(), 0, dayHash);
         assertTrue(hash1 != hash2, "Different days should get different initCodeHashes");
     }
 
-    function test_getInitCodeHash_differentDifficulties() public view {
+    function test_getInitCodeHash_differentTargetWork() public view {
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
         bytes32 hash2 = pool.getInitCodeHash(player1, 0, 32, 0, dayHash);
         assertTrue(hash1 != hash2, "Different difficulties should get different initCodeHashes");
     }
 
     function test_getInitCodeHash_differentCounters() public view {
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 1, dayHash);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 1, dayHash);
         assertTrue(hash1 != hash2, "Different counters should get different initCodeHashes");
     }
 
     function test_getInitCodeHash_differentDayHashes() public view {
-        // Same player, day, difficulty, and counter — but different dayHash values.
+        // Same player, day, target work, and counter — but different dayHash values.
         // This is the core of the pre-computation prevention: without knowing
         // the dayHash, a player cannot predict the initCodeHash for a future day.
         bytes32 dayHash1 = pool.dayHashes(0);
         bytes32 dayHash2 = keccak256("different day hash");
-        bytes32 hash1 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash1);
-        bytes32 hash2 = pool.getInitCodeHash(player1, 0, 16, 0, dayHash2);
+        bytes32 hash1 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash1);
+        bytes32 hash2 = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash2);
         assertTrue(hash1 != hash2, "Different dayHashes should get different initCodeHashes");
     }
 
@@ -555,8 +580,8 @@ contract MiningPoolTest is Test {
         pool.getCurrentDayHash();
         bytes32 day1Hash = pool.dayHashes(1);
 
-        address day0Address = pool.computeVanityAddress(player1, 0, salt, 0, 16, day0Hash);
-        address day1Address = pool.computeVanityAddress(player1, 0, salt, 1, 16, day1Hash);
+        address day0Address = pool.computeVanityAddress(player1, 0, salt, 0, pool.MIN_SHARE_WORK(), day0Hash);
+        address day1Address = pool.computeVanityAddress(player1, 0, salt, 1, pool.MIN_SHARE_WORK(), day1Hash);
 
         assertTrue(day0Address != day1Address, "Changing the day changes the CREATE2 address");
     }
@@ -564,11 +589,13 @@ contract MiningPoolTest is Test {
     function test_getInitCodeHash_matchesManualComputation() public view {
         uint256 playerId = uint256(uint160(player1));
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 expected = keccak256(abi.encodePacked(
-            type(CurrencyToken).creationCode,
-            abi.encode(playerId, uint256(0), uint256(16), uint256(0), dayHash)
-        ));
-        bytes32 actual = pool.getInitCodeHash(player1, 0, 16, 0, dayHash);
+        bytes32 expected = keccak256(
+            abi.encodePacked(
+                type(CurrencyToken).creationCode,
+                abi.encode(playerId, uint256(0), uint256(pool.MIN_SHARE_WORK()), uint256(0), dayHash)
+            )
+        );
+        bytes32 actual = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
         assertEq(actual, expected, "Should match manual computation");
     }
 
@@ -609,7 +636,7 @@ contract MiningPoolTest is Test {
         assertTrue(dayHash != bytes32(0), "Day hash should be available");
 
         // Now mine using the published dayHash
-        _submitValidShare(player1, 1, 16, 0);
+        _submitValidShare(player1, 1, pool.MIN_SHARE_WORK(), 1);
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1, "Should accept share on published day");
     }
 
@@ -618,19 +645,21 @@ contract MiningPoolTest is Test {
     // =========================================================================
 
     function test_getPoolStats_bootstrapOnly() public view {
-        (uint256 shares, uint256 difficulty, uint256 day, uint256 avg) = pool.getPoolStats();
+        (uint256 shares, uint256 work, uint256 day, uint256 avg) = pool.getPoolStats();
         assertEq(shares, pool.BOOTSTRAP_SHARE_COUNT());
-        assertEq(difficulty, pool.BOOTSTRAP_INTEGRATED_DIFFICULTY());
+        assertEq(work, pool.BOOTSTRAP_INTEGRATED_WORK());
         assertEq(day, 0);
-        assertEq(avg, pool.BOOTSTRAP_AVERAGE_DIFFICULTY());
+        assertEq(avg, pool.BOOTSTRAP_AVERAGE_WORK());
     }
 
     function test_getPoolStats_afterShares() public {
-        _submitValidShare(player1, 0, 16, 0);
+        _submitValidShare(player1, 0, pool.MIN_SHARE_WORK(), 1);
 
-        (uint256 shares, uint256 difficulty,, uint256 avg) = pool.getPoolStats();
+        (uint256 shares, uint256 work,, uint256 avg) = pool.getPoolStats();
         assertEq(shares, pool.BOOTSTRAP_SHARE_COUNT() + 1);
-        assertTrue(difficulty >= pool.BOOTSTRAP_INTEGRATED_DIFFICULTY() + 16, "Difficulty includes bootstrap plus share");
-        assertEq(avg, difficulty / shares, "Average should use bootstrap and organic shares");
+        assertTrue(
+            work >= pool.BOOTSTRAP_INTEGRATED_WORK() + pool.MIN_SHARE_WORK(), "Work includes bootstrap plus share"
+        );
+        assertEq(avg, work / shares, "Average should use bootstrap and organic shares");
     }
 }
