@@ -326,11 +326,21 @@ contract MiningPool {
 
         // Update player's cumulative score checkpoint.
         // If the player already has a checkpoint for today, it gets updated (not duplicated).
-        uint256 previousScore = _playerScores[playerId].upperLookup(today);
+        //
+        // We read the previous cumulative score with latest() (O(1), reads the tail
+        // checkpoint) rather than upperLookup(today) (O(log n) binary search). These are
+        // EQUIVALENT here, and only here, because of a strict invariant: score checkpoints
+        // are keyed by `today` (= getCurrentDay()), never by the `dayNumber` argument (a
+        // share may reference a past dayNumber, but its credit always lands on today). Since
+        // `today` is monotonically non-decreasing (it's derived from block.timestamp), every
+        // checkpoint key is <= today, so the most recent checkpoint (latest()) is always the
+        // one upperLookup(today) would return. The historical view getters below keep
+        // upperLookup because they're queried with arbitrary past days.
+        uint256 previousScore = _playerScores[playerId].latest();
         _playerScores[playerId].push(today, previousScore + credit);
 
-        // Update pool-wide cumulative score checkpoint.
-        uint256 previousPoolScore = _poolScores.upperLookup(today);
+        // Update pool-wide cumulative score checkpoint (same latest() reasoning as above).
+        uint256 previousPoolScore = _poolScores.latest();
         _poolScores.push(today, previousPoolScore + credit);
 
         // Update counter tracking
