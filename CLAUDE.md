@@ -1,6 +1,6 @@
 # Collaborative Vanity Address Mining
 
-First implementation of the collaborative vanity address mining system from the "Capturing and Distributing Cryptographic Luck" paper (Section 4). Players submit proof-of-work shares (leading zero bits in CREATE2 addresses) to an on-chain MiningPool on Base (Ethereum L2). When a vanity address is discovered, a meme currency token is deployed there with supply distributed proportionally to contributing players.
+First implementation of the collaborative vanity address mining system from the "Capturing and Distributing Cryptographic Luck" paper (Section 4). Players submit proof-of-work shares (low-valued CREATE2 addresses, scored by expected work) to an on-chain MiningPool on Base (Ethereum L2). When a vanity address is discovered, a meme currency token is deployed there with supply distributed proportionally to contributing players.
 
 Author: **Tristan Badface** (0xbadface.eth)
 
@@ -39,14 +39,24 @@ Author: **Tristan Badface** (0xbadface.eth)
 | `CurrencyToken.sol` | ERC-20 deployed at vanity CREATE2 addresses. Constructor params affect the address. Bytecode baked into MiningPool at compile time. |
 | `PlayerNFT.sol` | ERC-721 player identity. Lazy minted on first share submission. TokenId = wallet address. |
 | `CurrencyNFT.sol` | ERC-721 for discovered vanity addresses. Stores all CREATE2 params for later deployment. TokenId = vanity address. |
-| `libraries/LeadingZeros.sol` | Binary search leading zero bit counter (O(8) steps). |
+
+### Work Scoring
+
+Shares are scored by **expected work**, not leading-zero bits. `MiningPool.hashToWork(hash)` converts a CREATE2 hash into a continuous work value:
+
+```solidity
+if (hash == bytes32(0)) return type(uint256).max;
+return type(uint256).max / uint256(hash);   // lower hash → more expected hashes → more work
+```
+
+This mirrors the Bitcoin-style intuition (a lower hash needed more attempts on average) and is a smoother measure of effort than counting discrete zero bits. The all-zero hash saturates to `uint256.max`. There is no separate library — work scoring is a `pure` function on MiningPool. (The former `libraries/LeadingZeros.sol` leading-zero counter was removed in this switch.)
 
 ### CREATE2 Hash Construction
 
-The share hash IS the CREATE2 address computation. Every hash attempt simultaneously searches for leading zeros (share difficulty) and vanity patterns (currency discovery).
+The share hash IS the CREATE2 address computation. Every hash attempt simultaneously searches for low-valued hashes (share work) and vanity patterns (currency discovery).
 
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode || abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash))
+initCodeHash = keccak256(CurrencyToken.creationCode || abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
 address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 ```
 
@@ -59,10 +69,20 @@ The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` �
 
 ### Scoring
 
-- **Valid share** (actual >= target): credit = `min(target, totalDifficulty / 100)` (capped at 1% of pool)
-- **Invalid share** (actual < target): credit = `totalDifficulty / totalShareCount` (pool average)
-- **Pool total**: always gets full uncapped actual difficulty
+- **Valid share** (actual >= target): credit = `min(target, totalIntegratedWork / 100)` (capped at 1% of pool)
+- **Invalid share** (actual < target): credit = `min(totalIntegratedWork / totalShareCount, totalIntegratedWork / 100)` (pool average, also capped)
+- **Pool total**: always gets full uncapped actual work
 - Player scores stored as OpenZeppelin Checkpoints (day, cumulativeScore) with binary search via `upperLookup()`
+
+### Bootstrap
+
+The pool is pre-seeded in the constructor so early shares score sanely against a non-empty pool (avoids divide-by-zero in the average and gives a minimum valid share full credit under the 1% cap):
+
+- `BOOTSTRAP_SHARE_COUNT = 10`
+- `BOOTSTRAP_AVERAGE_WORK = MIN_SHARE_WORK * MAX_SHARE_CREDIT_DIVISOR / BOOTSTRAP_SHARE_COUNT`
+- `BOOTSTRAP_INTEGRATED_WORK = BOOTSTRAP_SHARE_COUNT * BOOTSTRAP_AVERAGE_WORK`
+
+`totalShareCount` and `totalIntegratedWork` start at these values. Decay schedule and final parameter calibration still need MC simulation (Phase 3).
 
 ### Day Management
 
@@ -80,14 +100,13 @@ The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` �
 
 ## Tests
 
-Four test suites, 95 tests total, all in `test/`:
+Three test suites, 88 tests total, all in `test/`:
 
 | Suite | Tests | Coverage |
 |---|---|---|
-| `LeadingZeros.t.sol` | 11 | Unit + fuzz (1000 runs) against naive implementation |
-| `MiningPool.t.sol` | 42 | Submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
+| `MiningPool.t.sol` | 44 | Submission, ordering, work scoring, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
 | `NFTIntegration.t.sol` | 25 | PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full mine-register-deploy flow |
-| `TokenDistribution.t.sol` | 17 | Distribution initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, auto-boost, multi-day flow, multiple currencies |
+| `TokenDistribution.t.sol` | 19 | Distribution initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, auto-boost, multi-day flow, multiple currencies |
 
 Run: `~/.foundry/bin/forge test`
 Run with gas: `~/.foundry/bin/forge test --gas-report`
@@ -133,13 +152,13 @@ All core contracts and third-party submission/registration implemented.
 - 1% discoverer reward + 99% proportional distribution to all players
 - Total supply chosen by CurrencyNFT holder at deployment time via `deployCurrency(vanityAddress, totalSupply)`
 - Pull-based `claim(playerId)` function; tokens mint to the current PlayerNFT owner
-- Auto-boost pool on currency deployment: add vanity address difficulty to totalIntegratedDifficulty (not totalShareCount and not score checkpoints) so discoveries can't be withheld from the pool. Double-counting with prior share submission is intentional — it's a gift to the commons.
-- 95 tests passing, including `TokenDistribution.t.sol`
+- Auto-boost pool on currency deployment: add vanity address work to totalIntegratedWork (not totalShareCount and not score checkpoints) so discoveries can't be withheld from the pool. Double-counting with prior share submission is intentional — it's a gift to the commons.
+- 88 tests passing, including `TokenDistribution.t.sol`
 
 ### Phase 3: Polish & Edge Cases
-- Bootstrap mechanism for empty pool (pre-seed values, decay — needs MC simulation)
+- Bootstrap mechanism for empty pool — pre-seed values IMPLEMENTED (`BOOTSTRAP_*` constants seed the pool in the constructor); decay schedule + parameter calibration still need MC simulation
 - Day 0/1 edge case handling
-- Minimum share difficulty calibration vs Base gas costs (currently 16 bits)
+- Minimum share work calibration vs Base gas costs (currently `MIN_SHARE_WORK = 1 << 16`, i.e. ~65,536 expected hashes)
 - Share expiration (TBD — practical concern, not security-critical)
 - Gas optimization
 
@@ -186,7 +205,7 @@ These were discussed and decided. Context preserved here so future sessions don'
 
 2. **CurrencyToken name/symbol.** Currently hardcoded "Vanity Currency" / "VANITY". Per-token customization would require adding name/symbol to constructor params (which changes the address) or a post-deploy setter.
 
-3. **Multiple currencies from same player.** Nothing prevents this — a player can register many vanity addresses across different counters, days, and difficulties. Each is an independent currency.
+3. **Multiple currencies from same player.** Nothing prevents this — a player can register many vanity addresses across different counters, days, and target work. Each is an independent currency.
 
 4. **Bootstrap sensitivity.** The 1% cap and average-reward mechanism interact subtly with an empty pool. First share sets the baseline. MC simulation needed to calibrate pre-seed values.
 
