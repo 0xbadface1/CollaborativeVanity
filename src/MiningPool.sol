@@ -179,6 +179,8 @@ contract MiningPool {
     error CurrencyNotRegistered();
     error DistributionSnapshotNotFrozen(uint256 snapshotDay, uint256 currentDay);
     error ZeroTotalSupply();
+    error ZeroPlayer();
+    error DeployedAddressMismatch(address expected, address deployed);
 
     // =========================================================================
     //                          CONSTRUCTOR
@@ -253,6 +255,11 @@ contract MiningPool {
     function submitShare(address player, uint256 targetWork, uint256 dayNumber, uint256 counter, bytes32 salt)
         external
     {
+        // --- Validate player ---
+        // playerId 0 (the zero address) is not a usable identity — it would fail in
+        // the downstream PlayerNFT mint anyway, but revert here with a clear error.
+        if (player == address(0)) revert ZeroPlayer();
+
         // --- Advance day if needed ---
         uint256 today = getCurrentDay();
         if (today > currentDay) {
@@ -344,6 +351,18 @@ contract MiningPool {
         );
     }
 
+    /// @notice Publish the current day's hash if it hasn't been published yet.
+    ///         STATE-CHANGING: advances the day and freezes the previous day's
+    ///         snapshot — exactly like the first submitShare of a new day, but
+    ///         without requiring a share. Anyone can call it; idempotent (no-op
+    ///         if the current day's hash is already published).
+    function getCurrentDayHash() external {
+        uint256 today = getCurrentDay();
+        if (today > currentDay) {
+            _advanceDay(today);
+        }
+    }
+
     // =========================================================================
     //                          VIEW FUNCTIONS
     // =========================================================================
@@ -371,16 +390,6 @@ contract MiningPool {
     /// @return The current day number
     function getCurrentDay() public view returns (uint256) {
         return (block.timestamp - dayZeroTimestamp) / 1 days;
-    }
-
-    /// @notice Publish the current day's hash if it hasn't been published yet.
-    ///         Anyone can call this — no share submission required.
-    ///         Cheap to call, idempotent (no-op if already current).
-    function getCurrentDayHash() external {
-        uint256 today = getCurrentDay();
-        if (today > currentDay) {
-            _advanceDay(today);
-        }
     }
 
     /// @notice Compute the initCodeHash for off-chain mining.
@@ -473,6 +482,8 @@ contract MiningPool {
         external
         returns (address vanityAddress)
     {
+        // Reject the zero address up front (clearer than the downstream PlayerNFT revert).
+        if (player == address(0)) revert ZeroPlayer();
         if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
 
         uint256 playerId = uint256(uint160(player));
@@ -557,8 +568,11 @@ contract MiningPool {
             disc.playerId, disc.dayNumber, disc.targetWork, disc.counter, disc.dayHash
         );
 
-        // Sanity check: deployed address must match the registered vanity address
-        assert(address(token) == vanityAddress);
+        // Sanity check: deployed address must match the registered vanity address.
+        // Use a descriptive revert rather than assert() — assert signals an invariant
+        // panic and consumes ALL remaining gas, which is wasteful for what is really a
+        // (practically unreachable) input/state mismatch.
+        if (address(token) != vanityAddress) revert DeployedAddressMismatch(vanityAddress, address(token));
 
         token.initializeDistribution(totalSupply);
 
