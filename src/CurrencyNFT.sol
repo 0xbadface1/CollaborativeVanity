@@ -24,11 +24,11 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 ///     - salt: the CREATE2 salt (the free search variable found off-chain)
 ///     - playerId: the discoverer's identity
 ///     - dayNumber: which day this was discovered (determines score snapshot)
-///     - targetDifficulty: the difficulty target used during search
+///     - targetWork: the expected-work target used during search
 ///
 ///   These params fully determine the vanity address:
 ///     address = CREATE2(factory=MiningPool, salt=salt,
-///               initCode=CurrencyToken(playerId, dayNumber, targetDifficulty, counter, dayHash))
+///               initCode=CurrencyToken(playerId, dayNumber, targetWork, counter, dayHash))
 ///
 /// LIFECYCLE:
 ///   1. Player discovers vanity address (off-chain search)
@@ -44,16 +44,15 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 ///   So if something "worthy" is discovered, someone more
 ///   expericenced could "buy" it, deploy and take care of it as the "owner" of the ERC20 token.
 contract CurrencyNFT is ERC721 {
-
     /// @notice All parameters needed to reconstruct and deploy at the vanity address.
     struct CurrencyDiscovery {
-        uint256 counter;          // share index (in initCode, defines address space)
-        bytes32 salt;             // CREATE2 salt (the free search variable)
-        uint256 playerId;         // discoverer's player ID
-        uint256 dayNumber;        // day of discovery (score snapshot anchor)
-        uint256 targetDifficulty; // difficulty target used during search
-        bytes32 dayHash;          // on-chain daily randomness (prevents pre-computation)
-        bool deployed;            // true after CurrencyToken has been deployed
+        uint256 counter; // share index (in initCode, defines address space)
+        bytes32 salt; // CREATE2 salt (the free search variable)
+        uint256 playerId; // discoverer's player ID
+        uint256 dayNumber; // day of discovery (score snapshot anchor)
+        uint256 targetWork; // expected-work target used during search
+        bytes32 dayHash; // on-chain daily randomness (prevents pre-computation)
+        bool deployed; // true after CurrencyToken has been deployed
     }
 
     /// @notice The MiningPool contract — only it can mint and mark as deployed.
@@ -77,7 +76,7 @@ contract CurrencyNFT is ERC721 {
     /// @param salt The CREATE2 salt (the found search variable)
     /// @param playerId The discoverer's player ID
     /// @param dayNumber The day of discovery
-    /// @param targetDifficulty The difficulty target used
+    /// @param targetWork The expected-work target used
     /// @param dayHash The on-chain daily randomness for the discovery day
     function mint(
         address to,
@@ -86,7 +85,7 @@ contract CurrencyNFT is ERC721 {
         bytes32 salt,
         uint256 playerId,
         uint256 dayNumber,
-        uint256 targetDifficulty,
+        uint256 targetWork,
         bytes32 dayHash
     ) external {
         if (msg.sender != miningPool) revert OnlyMiningPool();
@@ -96,7 +95,7 @@ contract CurrencyNFT is ERC721 {
             salt: salt,
             playerId: playerId,
             dayNumber: dayNumber,
-            targetDifficulty: targetDifficulty,
+            targetWork: targetWork,
             dayHash: dayHash,
             deployed: false
         });

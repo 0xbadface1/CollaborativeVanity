@@ -9,8 +9,8 @@
 The system has several properties that interact in non-obvious ways:
 
 - **Shares recorded under submission day** — the dayHash in the seed only determines currency discovery day
-- **Pre-committed difficulty** — target baked into the hash, can't be changed after computation
-- **Dual accounting** — player credit is capped, pool total gets full difficulty
+- **Pre-committed work** — target baked into the hash, can't be changed after computation
+- **Dual accounting** — player credit is capped, pool total gets full work
 - **Any hash can become a currency** — address quality is subjective; distributions follow the protocol's historical snapshot rules
 - **NFT identities** — tokenId = wallet address, transferable
 
@@ -24,7 +24,7 @@ Each property was designed to close specific attack vectors. This document trace
 A large player computes shares offline for weeks, doesn't submit them, then dumps them all at once to inflate their pool position before registering a currency discovery.
 
 ### Analysis
-**This is largely neutralized by submission-day recording.** Shares are always recorded under the day they're submitted, not the day their dayHash references. So hoarding shares and submitting them later doesn't let you retroactively insert difficulty into past days — all your hoarded shares land in "today."
+**This is largely neutralized by submission-day recording.** Shares are always recorded under the day they're submitted, not the day their dayHash references. So hoarding shares and submitting them later doesn't let you retroactively insert work into past days — all your hoarded shares land in "today."
 
 The dayHash in the share proves a lower bound on when computation happened, but the submission timestamp is what determines your position in the pool's time series.
 
@@ -61,26 +61,26 @@ One entity creates 1000 wallets, tries different target difficulties from each, 
 ### Why It Doesn't Work
 The wallet address (= playerId) is baked into the initCode, which feeds the CREATE2 address:
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash))
+initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
 Different wallets produce completely different initCodeHashes — and therefore completely different addresses — from the same salt. The attacker must compute separate hashes for each wallet. This doesn't save work — it just parallelizes it, which is equivalent to using one wallet with more compute.
 
-The pre-committed difficulty is also baked into initCode, so you can't compute one hash and retroactively attribute it to whichever wallet's target it happens to meet. The dayHash further anchors computation to a specific day's on-chain randomness.
+The pre-committed work is also baked into initCode, so you can't compute one hash and retroactively attribute it to whichever wallet's target it happens to meet. The dayHash further anchors computation to a specific day's on-chain randomness.
 
 ### Verdict
 **Not a viable attack.** The hash construction prevents it by design.
 
 ---
 
-## 4. Cross-Identity Difficulty Cherry-Picking
+## 4. Cross-Identity Work Cherry-Picking
 
 ### The Attack
-A player creates wallets A, B, C with different target difficulties:
-- Wallet A: target = 20 bits (easy, almost certain to hit)
-- Wallet B: target = 40 bits (hard, unlikely)
-- Wallet C: target = 60 bits (extremely hard, lottery ticket)
+A player creates wallets A, B, C with different target work values:
+- Wallet A: target = 1,000,000 work (easy)
+- Wallet B: target = 1,000,000,000 work (hard)
+- Wallet C: target = 1,000,000,000,000 work (lottery ticket)
 
 Only submit from the wallet(s) that hit their target.
 
@@ -104,7 +104,7 @@ Player A broadcasts a `registerCurrency` transaction. Player B sees it in the me
 ### Analysis
 The CREATE2 address depends on:
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash))
+initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
@@ -120,20 +120,20 @@ Note: `submitShare` and `registerCurrency` accept the player address as an expli
 ## 6. Share Spam / Griefing
 
 ### The Attack
-Submit thousands of zero-difficulty shares to:
+Submit thousands of zero-work shares to:
 - Inflate the total share count (lowering average reward for everyone)
 - Waste pool storage
 
 ### Analysis
-Every submission costs gas. A very low-difficulty share:
+Every submission costs gas. A very low-work share:
 - Adds to `totalShareCount` (denominator goes up)
-- Adds near-zero to `totalIntegratedDifficulty` (numerator barely changes)
-- This LOWERS `averageReward = totalDifficulty / totalCount`
+- Adds near-zero to `totalIntegratedWork` (numerator barely changes)
+- This LOWERS `averageReward = totalWork / totalCount`
 - The attacker hurts themselves too
 
-### Solution: Minimum Difficulty Threshold
+### Solution: Minimum Work Threshold
 ```solidity
-require(actualDifficulty >= MIN_SHARE_DIFFICULTY, "Below minimum difficulty");
+require(actualWork >= MIN_SHARE_WORK, "Below minimum work");
 ```
 
 Calibration:
@@ -142,14 +142,14 @@ Calibration:
 - Suggested: ~16 bits (1 in 65,536 hashes — findable in well under a second even on a phone)
 
 ### Verdict
-**Mitigated by minimum difficulty threshold.** Without it, spam is cheap; with it, spam is economically irrational.
+**Mitigated by minimum work threshold.** Without it, spam is cheap; with it, spam is economically irrational.
 
 ---
 
 ## 7. Pool Bootstrap Manipulation
 
 ### The Attack
-First player on Day 1 submits a single low-difficulty share, setting a distorted baseline for the average reward. OR: submits an artificially high-difficulty share to set an unreachable baseline.
+First player on Day 1 submits a single low-work share, setting a distorted baseline for the average reward. OR: submits an artificially high-work share to set an unreachable baseline.
 
 ### Analysis
 With 0 or 1 shares, the average reward is trivially manipulable. This is the cold-start problem.
@@ -157,11 +157,11 @@ With 0 or 1 shares, the average reward is trivially manipulable. This is the col
 ### Solutions Under Consideration
 
 **A. Pre-seed the pool** with synthetic totals at deployment:
-- Initialize `totalIntegratedDifficulty = X`, `totalShareCount = Y`
+- Initialize `totalIntegratedWork = X`, `totalShareCount = Y`
 - Establishes a reasonable average from Day 0
 - But values are somewhat arbitrary
 
-**B. Bootstrap by being the first player** with GPU-generated high-difficulty shares:
+**B. Bootstrap by being the first player** with GPU-generated high-work shares:
 - More organic, but relies on the deployer going first
 - Slightly against the paper's neutrality ethos (though someone has to go first)
 
@@ -183,17 +183,17 @@ With 0 or 1 shares, the average reward is trivially manipulable. This is the col
 ## 8. The 1% Cap Edge Cases
 
 ### Scenario: Mega-Share Impact
-A player hits an astronomically lucky share (60 leading zero bits when 20-30 are normal). Without the cap, this single share would represent ~50% of all pool difficulty, dominating all future distributions.
+A player hits an astronomically lucky share whose actual work is far above the current pool scale. Without the cap, this single share could dominate all future distributions.
 
 ### How the Cap Works
-- **Player credit:** `min(targetDifficulty, totalIntegratedDifficulty / 100)` — at most 1% of pool
-- **Pool total:** gets the FULL actual difficulty, uncapped
+- **Player credit:** `min(targetWork, totalIntegratedWork / 100)` — at most 1% of pool
+- **Pool total:** gets the FULL actual work, uncapped
 
 ### Effects
 1. The player gets a bounded reward (decent but not dominant)
-2. The pool's total difficulty jumps — boosting the average for everyone
+2. The pool's total work jumps — boosting the average for everyone
 3. All existing players are slightly diluted in proportion — but the average reward per share goes up
-4. The excess difficulty is effectively "donated" to the pool commons
+4. The excess work is effectively "donated" to the pool commons
 
 ### Edge Case: Sequential Mega-Shares
 If multiple mega-shares arrive in quick succession, each is capped at 1% of the *growing* total. The pool total ratchets up with each one. This is correct behavior — the cap references the current state.
@@ -209,8 +209,8 @@ If multiple mega-shares arrive in quick succession, each is capped at 1% of the 
 A mega-share boosts the pool's average. There's a brief window where submitting "invalid" shares (which get the average reward) is unusually profitable.
 
 ### Analysis
-An invalid share gets `totalIntegratedDifficulty / totalShareCount`. After a mega-share:
-- Numerator jumps (full difficulty added)
+An invalid share gets `totalIntegratedWork / totalShareCount`. After a mega-share:
+- Numerator jumps (full work added)
 - Denominator increases by only 1
 - Average spikes temporarily
 
@@ -219,11 +219,11 @@ Players could rush to submit invalid shares during this window, each getting the
 ### Why It's Mostly Fine
 - Each submission costs gas — there's a floor cost
 - Each invalid share adds 1 to the denominator, naturally bringing the average back down
-- The minimum difficulty threshold means spam is still bounded
+- The minimum work threshold means spam is still bounded
 - This is actually a feature: it incentivizes active participation ("be online when something interesting happens")
 
 ### Verdict
-**A transient effect that self-corrects.** The minimum difficulty threshold prevents pure exploitation. The window is a mild incentive for activity, not a critical vulnerability.
+**A transient effect that self-corrects.** The minimum work threshold prevents pure exploitation. The window is a mild incentive for activity, not a critical vulnerability.
 
 ---
 
@@ -289,12 +289,12 @@ With same-day discovery (dayHash from today):
 |---|---|
 | **Submission-day recording** | Share withholding, retroactive insertion, timing attacks |
 | **D-1 distribution snapshot** | Strategic timing around discoveries |
-| **Pre-committed difficulty in hash** | Sybil attacks, retroactive difficulty claims |
+| **Pre-committed work in hash** | Sybil attacks, retroactive work claims |
 | **1% per-share cap** | Single lucky share dominating pool |
-| **Full difficulty to pool total** | Socializes luck, boosts average for all |
+| **Full work to pool total** | Socializes luck, boosts average for all |
 | **Discoverer playerId in initCode** | Front-running discoveries |
 | **dayHash in initCode** | Pre-computing shares for future days |
-| **Minimum share difficulty threshold** | Spam/griefing, average reward exploitation |
+| **Minimum share work threshold** | Spam/griefing, average reward exploitation |
 | **Constructor chain check + contract address in dayHash** | Cross-chain replay, fork replay |
 | **Bootstrap pre-seeding + decay** | Cold-start manipulation |
 | **Checkpoints with binary search** | Efficient historical score lookups for distribution |
@@ -302,7 +302,7 @@ With same-day discovery (dayHash from today):
 ## Still Open / Needs Simulation
 
 1. **Share expiration window**: probably still useful practically (stale dayHashes), but not critical for security
-2. **Minimum difficulty value**: needs calibration against Base gas costs and expected casual player hardware
+2. **Minimum work value**: needs calibration against Base gas costs and expected casual player hardware
 3. **Bootstrap parameters**: pre-seed values and decay rate — needs MC simulation
 4. **Currency discovery dayHash freshness**: optional constraint, not strictly needed for security
 5. **Average reward spike duration**: how quickly does it self-correct? Depends on submission rate

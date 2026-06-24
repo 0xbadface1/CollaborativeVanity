@@ -34,7 +34,7 @@ interface IPlayerNFT {
 ///   We include exactly the params that define the mining context:
 ///     - playerId: who discovered this address (also prevents replay across players)
 ///     - dayNumber: when it was discovered (anchors to a time window)
-///     - targetDifficulty: the difficulty bet (prevents retroactive difficulty changes)
+///     - targetWork: the expected-work bet (prevents retroactive target changes)
 ///     - counter: the share submission index (strictly increasing per player per day)
 ///     - dayHash: on-chain daily randomness (prevents pre-computing shares for future days)
 ///
@@ -61,9 +61,9 @@ contract CurrencyToken is ERC20 {
     ///         Used to look up historical player/pool scores for distribution.
     uint256 public immutable dayNumber;
 
-    /// @notice The target difficulty the discoverer was mining at.
-    ///         Baked into the hash to prevent retroactive difficulty changes.
-    uint256 public immutable targetDifficulty;
+    /// @notice The target work the discoverer was mining at.
+    ///         Baked into the hash to prevent retroactive target changes.
+    uint256 public immutable targetWork;
 
     /// @notice The share submission counter. Part of the initCode — changing it
     ///         changes the address space being searched. Strictly increasing per
@@ -119,15 +119,15 @@ contract CurrencyToken is ERC20 {
 
     /// @param _playerId The discovering player's ID
     /// @param _dayNumber The discovery day number
-    /// @param _targetDifficulty The difficulty target used during mining
+    /// @param _targetWork The expected-work target used during mining
     /// @param _counter The share counter (part of initCode, affects address space)
     /// @param _dayHash The on-chain daily randomness (prevents pre-computation for future days)
-    constructor(uint256 _playerId, uint256 _dayNumber, uint256 _targetDifficulty, uint256 _counter, bytes32 _dayHash)
+    constructor(uint256 _playerId, uint256 _dayNumber, uint256 _targetWork, uint256 _counter, bytes32 _dayHash)
         ERC20("Vanity Currency", "VANITY")
     {
         playerId = _playerId;
         dayNumber = _dayNumber;
-        targetDifficulty = _targetDifficulty;
+        targetWork = _targetWork;
         counter = _counter;
         dayHash = _dayHash;
         miningPool = msg.sender;
@@ -193,6 +193,9 @@ contract CurrencyToken is ERC20 {
         if (claimed[claimPlayerId]) revert AlreadyClaimed(claimPlayerId);
 
         uint256 playerScore = IMiningPool(miningPool).getPlayerScoreAt(claimPlayerId, snapshotDay);
+        // Redundant invariant check: MiningPool should never report a player
+        // score above the pool score at the same snapshot.
+        assert(playerScore <= poolScoreAtSnapshot);
         uint256 poolAllocation = Math.mulDiv(distributionSupply, 99, 100);
         uint256 proportionalAmount = Math.mulDiv(poolAllocation, playerScore, poolScoreAtSnapshot);
         uint256 discovererBonus = claimPlayerId == playerId ? distributionSupply / 100 : 0;

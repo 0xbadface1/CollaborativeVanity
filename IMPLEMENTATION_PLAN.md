@@ -34,11 +34,8 @@ CollaborativeVanity/
 │   │                               #   currency registration & deployment, NFT deployment
 │   ├── CurrencyToken.sol           # ERC-20 deployed at registered CREATE2 address
 │   ├── CurrencyNFT.sol             # Registered currency addresses as tradeable NFTs
-│   ├── PlayerNFT.sol               # Player identity as transferable NFT
-│   └── libraries/
-│       └── LeadingZeros.sol        # Leading zero bit counter (difficulty measurement)
+│   └── PlayerNFT.sol               # Player identity as transferable NFT
 ├── test/
-│   ├── LeadingZeros.t.sol          # Unit + fuzz tests for difficulty counting
 │   ├── MiningPool.t.sol            # Share submission, scoring, day advancement
 │   ├── NFTIntegration.t.sol        # PlayerNFT, CurrencyNFT, registration, deployment flow
 │   └── TokenDistribution.t.sol     # Distribution initialization, claims, snapshots, auto-boost
@@ -61,7 +58,7 @@ CollaborativeVanity/
 
 5. **Daily pool snapshots**: first submission on a new day triggers a snapshot of pool-wide totals from the previous day. O(1) advancement regardless of gap — skipped days simply have no hash.
 
-6. **Dual accounting**: player credit is capped (1% of pool max), pool total gets full actual difficulty.
+6. **Dual accounting**: player credit is capped (1% of pool max), pool total gets full actual work.
 
 7. **Counter + salt separation**: counter is committed in the hash (ordering), salt is the free search variable (iterated rapidly off-chain).
 
@@ -70,14 +67,14 @@ CollaborativeVanity/
 ## CREATE2 Architecture
 
 The share hash IS the CREATE2 address computation. Every hash attempt simultaneously produces:
-- Leading zeros → share difficulty (proof of work)
+- Leading zeros → share work (proof of work)
 - A currency address → optionally vanity, but not judged on-chain
 
 ### Formula
 
 ```
 initCodeHash = keccak256(
-    CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetDifficulty, counter, dayHash)
+    CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
 )
 
 CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
@@ -89,7 +86,7 @@ CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 |---|---|---|---|
 | `playerId` | initCode | Player identity (= wallet address) | Explicit parameter (third-party submission OK) |
 | `dayNumber` | initCode | Time anchor | Must have valid dayHash |
-| `targetDifficulty` | initCode | Pre-committed difficulty bet | Anti-Sybil: can't retroactively lower |
+| `targetWork` | initCode | Pre-committed work bet | Anti-Sybil: can't retroactively lower |
 | `counter` | initCode | Share submission index | Strictly increasing per player per day |
 | `dayHash` | initCode | On-chain daily randomness | Prevents pre-computing shares for future days |
 | `salt` | CREATE2 salt | Free search variable | No constraint — iterated billions of times |
@@ -98,11 +95,11 @@ The counter defines WHICH address space to search. The salt searches WITHIN that
 
 ### Off-chain mining workflow
 
-1. Pick `targetDifficulty`, `dayNumber`, `counter` (must be > last submitted)
+1. Pick `targetWork`, `dayNumber`, `counter` (must be > last submitted)
 2. Look up `dayHash = dayHashes(dayNumber)` — must be non-zero (day must exist)
-3. Compute `initCodeHash = getInitCodeHash(me, day, difficulty, counter, dayHash)` — fixed per counter
+3. Compute `initCodeHash = getInitCodeHash(me, day, work, counter, dayHash)` — fixed per counter
 4. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`
-5. If `leadingZeros(hash) >= targetDifficulty`: submit `(counter, salt)` pair
+5. If `hashToWork(hash) >= targetWork`: submit `(counter, salt)` pair
 6. If you want that hash to become a coin: register its address as a currency
 
 The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is baked into MiningPool at compile time. No setter or external loading needed. Any change to CurrencyToken automatically updates all hash computations on recompile.
@@ -130,19 +127,19 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 - `mapping(day => DaySnapshot)` — frozen daily pool-wide totals
 - `mapping(day => bytes32)` — daily anchor hashes
 - `mapping(playerId => mapping(day => uint256))` — last submitted counter per player per day
-- `uint256 totalIntegratedDifficulty` — running pool total (uncapped)
+- `uint256 totalIntegratedWork` — running pool total (uncapped)
 - `uint256 totalShareCount` — running share count
 - `PlayerNFT playerNFT` — deployed by constructor
 - `CurrencyNFT currencyNFT` — deployed by constructor
 
 **Key functions:**
-- `submitShare(player, targetDifficulty, dayNumber, counter, salt)` — core share submission (anyone can submit on behalf of a player)
-- `registerCurrency(player, counter, salt, dayNumber, targetDifficulty)` → mints CurrencyNFT to current PlayerNFT owner
+- `submitShare(player, targetWork, dayNumber, counter, salt)` — core share submission (anyone can submit on behalf of a player)
+- `registerCurrency(player, counter, salt, dayNumber, targetWork)` → mints CurrencyNFT to current PlayerNFT owner
 - `deployCurrency(vanityAddress, totalSupply)` → CREATE2 deploys CurrencyToken, only by NFT owner
 - `getPlayerScoreAt(playerId, day)` → checkpoint binary search
 - `getPoolScoreAt(day)` → pool-wide checkpoint binary search
-- `getInitCodeHash(player, day, difficulty, counter, dayHash)` → for off-chain mining
-- `computeVanityAddress(player, counter, salt, day, difficulty, dayHash)` → verify before registering
+- `getInitCodeHash(player, day, work, counter, dayHash)` → for off-chain mining
+- `computeVanityAddress(player, counter, salt, day, work, dayHash)` → verify before registering
 - `getCurrentDayHash()` → publish current day's hash without submitting a share (resolves dayHash bootstrap)
 
 ### CurrencyToken (ERC-20)
@@ -150,7 +147,7 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 Deployed via CREATE2 at registered currency addresses.
 
 **Constructor params** (affect the CREATE2 address):
-- `playerId`, `dayNumber`, `targetDifficulty`, `counter`, `dayHash`
+- `playerId`, `dayNumber`, `targetWork`, `counter`, `dayHash`
 
 **NOT in constructor** (chosen at deployment time):
 - `totalSupply` — passed to `MiningPool.deployCurrency()` and stored by `initializeDistribution()`
@@ -174,7 +171,7 @@ Registered currency addresses as tradeable NFTs.
 - `salt` — CREATE2 salt (found off-chain)
 - `playerId` — registering player
 - `dayNumber` — day committed into the CREATE2 address (score snapshot anchor)
-- `targetDifficulty` — difficulty target
+- `targetWork` — work target
 - `deployed` — whether CurrencyToken has been deployed
 
 **Lifecycle:**
@@ -192,28 +189,35 @@ Player identity as transferable NFT.
 
 Lazy minted by MiningPool on first share submission (idempotent `mintIfNeeded`). Transferable — selling transfers ownership of accumulated mining credits.
 
-### LeadingZeros (library)
+### Work Scoring
 
-Counts leading zero bits in bytes32. Binary search approach — O(8) steps. Used to measure share difficulty.
+`MiningPool.hashToWork(hash)` converts a CREATE2 hash into expected work. Lower hashes produce higher work:
+
+```solidity
+if (hash == bytes32(0)) return type(uint256).max;
+return type(uint256).max / uint256(hash);
+```
+
+The all-zero hash saturates to `uint256.max`, which is the largest representable work value.
 
 ---
 
 ## Game-Theoretic Design
 
-### Pre-Committed Difficulty (Anti-Sybil)
+### Pre-Committed Work (Anti-Sybil)
 
-Target difficulty is baked into initCode (constructor params). Can't retroactively lower.
+Target work is baked into initCode (constructor params). Can't retroactively lower.
 
 - **Valid share** (actual >= target): credit = target, capped at 1% of pool total
 - **Invalid share** (actual < target): credit = current pool average, capped at 1% of pool total
-- **Pool total**: always gets full uncapped actual difficulty
+- **Pool total**: always gets full uncapped actual work
 
 ### Dual Accounting
 
 | | Player's Credit | Pool's Total |
 |---|---|---|
-| Valid share | `min(target, totalDifficulty / 100)` | Full actual difficulty |
-| Invalid share | `min(totalDifficulty / totalShareCount, totalDifficulty / 100)` | Full actual difficulty |
+| Valid share | `min(target, totalWork / 100)` | Full actual work |
+| Invalid share | `min(totalWork / totalShareCount, totalWork / 100)` | Full actual work |
 
 Lucky mega-shares boost the pool average for everyone — socialized luck.
 
@@ -231,16 +235,14 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 ### Phase 1: Core System ✅ COMPLETE
 
 - [x] Foundry project setup, OpenZeppelin installed
-- [x] `LeadingZeros.sol` — leading zero bit counter
 - [x] `CurrencyToken.sol` — minimal ERC-20 with CREATE2 constructor params (incl. dayHash)
 - [x] `PlayerNFT.sol` — lazy minting, address-as-tokenId
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
-- [x] `LeadingZeros.t.sol` — 11 tests including fuzz test against naive implementation
-- [x] `MiningPool.t.sol` — 44 tests covering submission, ordering, difficulty, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
+- [x] `MiningPool.t.sol` — 44 tests covering submission, ordering, work, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
 - [x] `NFTIntegration.t.sol` — 25 tests covering PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full flow
 - [x] Third-party submission — `submitShare` and `registerCurrency` accept explicit player address; CurrencyNFT minted to current PlayerNFT owner
-- [x] 78 Phase 1 tests, all passing before Phase 2 additions
+- [x] Phase 1 tests passing before Phase 2 additions
 
 ### Phase 2: Token Distribution ✅ COMPLETE
 
@@ -248,16 +250,16 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 - [x] 1% discoverer reward + 99% proportional distribution
 - [x] Total supply chosen by CurrencyNFT holder at deployment time
 - [x] Player claim function (each player calls to receive their share)
-- [x] Auto-boost pool on currency deployment — add registered address leading-zero difficulty to `totalIntegratedDifficulty` (not `totalShareCount`). Prevents withholding difficulty from the pool. Double-counting with prior share submission is intentional (gift to the commons).
+- [x] Auto-boost pool on currency deployment — add registered address full-hash work to `totalIntegratedWork` (not `totalShareCount`). Prevents withholding work from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [x] Integration tests for full mint flow
-- [x] `TokenDistribution.t.sol` — 18 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
-- [x] 98 tests total, all passing
+- [x] `TokenDistribution.t.sol` — 19 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
+- [x] 88 tests total, all passing
 
 ### Phase 3: Polish & Edge Cases
 
 - [ ] Bootstrap mechanism for empty pool (pre-seed values, decay, parameters)
 - [ ] Day 0/1 edge case handling
-- [ ] Minimum share difficulty calibration vs Base gas costs
+- [ ] Minimum share work calibration vs Base gas costs
 - [ ] Share expiration (practical concern, TBD)
 - [ ] Gas optimization
   - [ ] Use `upperLookupRecent` instead of `upperLookup` in submitShare (2 lookups per call, always recent keys)
@@ -287,7 +289,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 ## Testing Strategy
 
 - **Unit tests per contract** — every function, every edge case
-- **Fuzz tests** — Foundry's fuzzer (1000 runs) for LeadingZeros, share verification
+- **Fuzz tests** — Foundry's fuzzer for share verification and future invariants
 - **Integration tests** — full flow: submit shares → register currency → deploy → mint
 - **Invariant tests** — pool score = sum of player scores, checkpoint ordering
 - **Memory-efficient test helpers** — free memory pointer reset in search loops to prevent MemoryOOG
@@ -300,7 +302,7 @@ Lucky mega-shares boost the pool average for everyone — socialized luck.
 1. **Bootstrap mechanism** — pre-seed values, decay schedule, first-share handling
 2. **Total supply of currencies** — discoverer-chosen at deployment (not in hash)
 3. **Share expiration** — practical concern for stale data, TBD
-4. **Minimum share difficulty** — calibrate against Base gas costs (currently 16 bits)
+4. **Minimum share work** — calibrate against Base gas costs (currently 65,536 expected hashes)
 5. **Token name/symbol** — hardcoded "Vanity Currency" for now, per-token customization TBD
 
 ---
