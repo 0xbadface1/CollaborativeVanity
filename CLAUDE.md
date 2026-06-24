@@ -106,11 +106,11 @@ The pool is pre-seeded in the constructor so early shares score sanely against a
 
 ## Tests
 
-Three test suites, 88 tests total, all in `test/`:
+Three test suites, 92 tests total, all in `test/`:
 
 | Suite | Tests | Coverage |
 |---|---|---|
-| `MiningPool.t.sol` | 44 | Submission, ordering, work scoring, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
+| `MiningPool.t.sol` | 48 | Submission, ordering, work scoring, credits (incl. mature-pool combined credit via test harness), days, checkpoints, chain lock, dayHash, getCurrentDayHash |
 | `NFTIntegration.t.sol` | 25 | PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full mine-register-deploy flow |
 | `TokenDistribution.t.sol` | 19 | Distribution initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, auto-boost, multi-day flow, multiple currencies |
 
@@ -159,7 +159,7 @@ All core contracts and third-party submission/registration implemented.
 - Total supply chosen by CurrencyNFT holder at deployment time via `deployCurrency(vanityAddress, totalSupply)`
 - Pull-based `claim(playerId)` function; tokens mint to the current PlayerNFT owner
 - Auto-boost pool on currency deployment: add vanity address work to totalIntegratedWork (not totalShareCount and not score checkpoints) so discoveries can't be withheld from the pool. Double-counting with prior share submission is intentional — it's a gift to the commons.
-- 88 tests passing, including `TokenDistribution.t.sol`
+- 92 tests passing, including `TokenDistribution.t.sol`
 
 ### Phase 3: Polish & Edge Cases
 - Bootstrap mechanism for empty pool — pre-seed values IMPLEMENTED (`BOOTSTRAP_*` constants seed the pool in the constructor); decay schedule + parameter calibration still need MC simulation

@@ -5,6 +5,34 @@ import {Test, console} from "forge-std/Test.sol";
 import {MiningPool} from "../src/MiningPool.sol";
 import {CurrencyToken} from "../src/CurrencyToken.sol";
 
+/// @title MiningPoolHarness
+/// @notice Test-only subclass of MiningPool that exposes a setter for the pool's
+///         running aggregates.
+///
+///         WHY THIS EXISTS:
+///         The combined-credit cap only "opens up" once totalShareCount > 100 — at
+///         that point cap (= totalIntegratedWork / 100) exceeds the pool average
+///         (= totalIntegratedWork / totalShareCount), so a valid share's credit
+///         (average + target, capped) stops being pinned to the cap the way it is
+///         during the 10-share bootstrap. Reaching that regime organically would
+///         require submitting ~90 real shares, each costing a ~65K-iteration salt
+///         search. Seeding the two aggregates directly lets us exercise the additive
+///         path and the final single cap in a fast, deterministic test.
+///
+///         Only totalShareCount and totalIntegratedWork are seeded — exactly the two
+///         values the credit calculation reads. The real submitShare path is still
+///         exercised end-to-end on top of the seeded state.
+contract MiningPoolHarness is MiningPool {
+    constructor(uint256 expectedChainId) MiningPool(expectedChainId) {}
+
+    /// @notice Seed the pool's running aggregates. Test-only — bypasses snapshots
+    ///         and score checkpoints, which the credit calculation does not read.
+    function setPoolAggregates(uint256 shareCount, uint256 integratedWork) external {
+        totalShareCount = shareCount;
+        totalIntegratedWork = integratedWork;
+    }
+}
+
 /// @title MiningPoolTest
 /// @notice Foundry test suite for MiningPool.
 ///
@@ -23,7 +51,7 @@ import {CurrencyToken} from "../src/CurrencyToken.sol";
 ///   Each (counter, salt) pair produces a unique hash. The counter defines which
 ///   address space, the salt searches within it.
 contract MiningPoolTest is Test {
-    MiningPool public pool;
+    MiningPoolHarness public pool;
 
     address public player1;
     address public player2;
@@ -35,7 +63,7 @@ contract MiningPoolTest is Test {
     function setUp() public {
         player1 = makeAddr("player1");
         player2 = makeAddr("player2");
-        pool = new MiningPool(block.chainid);
+        pool = new MiningPoolHarness(block.chainid);
     }
 
     // =========================================================================
@@ -371,6 +399,93 @@ contract MiningPoolTest is Test {
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
 
         assertEq(scoreAfter - scoreBefore, maxCredit, "Invalid share credit should be capped");
+    }
+
+    // =========================================================================
+    //          MATURE POOL CREDIT TESTS (combined participation + bonus)
+    // =========================================================================
+    //
+    // During the 10-share bootstrap the pool average exceeds the cap, so every
+    // credit is pinned to the cap. These tests seed totalShareCount > 100 (where
+    // cap > average) via the harness to exercise the additive credit path
+    // (average + target) and the single final cap. See MiningPoolHarness.
+
+    /// @notice In a mature pool where average + target stays below the cap, a valid
+    ///         share is credited the pool average PLUS its target work.
+    function test_submitShare_maturePool_validShare_getsAveragePlusTarget() public {
+        // 200 shares, 200,000,000 work -> average = 1,000,000, cap = 2,000,000.
+        uint256 shareCount = 200;
+        uint256 integratedWork = 200_000_000;
+        pool.setPoolAggregates(shareCount, integratedWork);
+
+        uint256 average = integratedWork / shareCount; // 1,000,000
+        uint256 cap = integratedWork / pool.MAX_SHARE_CREDIT_DIVISOR(); // 2,000,000
+        uint256 target = pool.MIN_SHARE_WORK(); // keeps the salt search cheap
+
+        // average + target = 1,065,536 < cap, so the cap does NOT bind here.
+        uint256 expectedCredit = average + target;
+        assertLt(expectedCredit, cap, "test setup: combined credit should sit below the cap");
+
+        uint256 playerId = uint256(uint160(player1));
+        (bytes32 salt,) = _findValidSalt(player1, 0, target, 1, 0);
+        pool.submitShare(player1, target, 0, 1, salt);
+
+        assertEq(
+            pool.getPlayerScoreAt(playerId, 0),
+            expectedCredit,
+            "Valid share in mature pool = pool average + target work"
+        );
+    }
+
+    /// @notice When average + target exceeds the cap, the COMBINED credit is capped
+    ///         once at 1% of the pool — the participation and bonus terms can't stack
+    ///         past the ceiling.
+    function test_submitShare_maturePool_combinedCreditCappedAtOnePercent() public {
+        // 200 shares, 6,553,600 work -> average = 32,768, cap = 65,536.
+        // A valid share with target = MIN_SHARE_WORK (65,536) gives
+        // average + target = 98,304 > cap, so it caps to 65,536.
+        uint256 shareCount = 200;
+        uint256 integratedWork = 6_553_600;
+        pool.setPoolAggregates(shareCount, integratedWork);
+
+        uint256 average = integratedWork / shareCount; // 32,768
+        uint256 cap = integratedWork / pool.MAX_SHARE_CREDIT_DIVISOR(); // 65,536
+        uint256 target = pool.MIN_SHARE_WORK(); // 65,536
+        assertGt(average + target, cap, "test setup: combined credit should exceed the cap");
+
+        uint256 playerId = uint256(uint160(player1));
+        (bytes32 salt,) = _findValidSalt(player1, 0, target, 1, 0);
+        pool.submitShare(player1, target, 0, 1, salt);
+
+        assertEq(pool.getPlayerScoreAt(playerId, 0), cap, "Combined credit capped at 1% of the pool");
+    }
+
+    /// @notice Anti-sandbag property: in identical pool state, a valid share must
+    ///         score strictly more than an invalid one — so there is never a reason
+    ///         to deliberately miss a target just to collect the bare average.
+    function test_submitShare_maturePool_validScoresMoreThanInvalid() public {
+        uint256 shareCount = 200;
+        uint256 integratedWork = 200_000_000; // average = 1,000,000, cap = 2,000,000
+        uint256 unreachableTarget = 1 << 128;
+        uint256 player1Id = uint256(uint160(player1));
+        uint256 player2Id = uint256(uint160(player2));
+
+        // Invalid share (target unreachable -> actual < target): credit = min(average, cap).
+        pool.setPoolAggregates(shareCount, integratedWork);
+        (bytes32 invalidSalt,) = _findValidSalt(player2, 0, unreachableTarget, 1, 0);
+        pool.submitShare(player2, unreachableTarget, 0, 1, invalidSalt);
+        uint256 invalidCredit = pool.getPlayerScoreAt(player2Id, 0);
+
+        // Re-seed identical state, then a valid share: credit = min(average + target, cap).
+        pool.setPoolAggregates(shareCount, integratedWork);
+        uint256 target = pool.MIN_SHARE_WORK();
+        (bytes32 validSalt,) = _findValidSalt(player1, 0, target, 1, 0);
+        pool.submitShare(player1, target, 0, 1, validSalt);
+        uint256 validCredit = pool.getPlayerScoreAt(player1Id, 0);
+
+        assertEq(invalidCredit, integratedWork / shareCount, "Invalid share = pool average (below cap here)");
+        assertEq(validCredit, integratedWork / shareCount + target, "Valid share = pool average + target");
+        assertGt(validCredit, invalidCredit, "Valid share must outscore an invalid one in the same pool");
     }
 
     // =========================================================================
