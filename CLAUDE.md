@@ -71,10 +71,14 @@ The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` â€
 
 ### Scoring
 
-- **Valid share** (actual >= target): credit = `min(target, totalIntegratedWork / 100)` (capped at 1% of pool)
-- **Invalid share** (actual < target): credit = `min(totalIntegratedWork / totalShareCount, totalIntegratedWork / 100)` (pool average, also capped)
+Every accepted share earns the **pool average** (`totalIntegratedWork / totalShareCount`) as a participation credit. A **valid** share (actual work >= its pre-committed target, target > 0) additionally earns its **target work** as a performance bonus. The combined credit is capped **once** at 1% of the pool total:
+
+- **Valid share** (actual >= target): credit = `min(average + target, totalIntegratedWork / 100)`
+- **Invalid share** (actual < target): credit = `min(average, totalIntegratedWork / 100)`
 - **Pool total**: always gets full uncapped actual work
 - Player scores stored as OpenZeppelin Checkpoints (day, cumulativeScore) with binary search via `upperLookup()`
+
+Capping the *combined* credit keeps the 1% per-share ceiling intact while making a valid share always worth at least as much as an invalid one. This closes a wart in the earlier mutually-exclusive scheme, where a below-average player was better off declaring an unreachable target and submitting an "invalid" share to collect the (higher) average instead of honestly hitting a modest target.
 
 ### Bootstrap
 

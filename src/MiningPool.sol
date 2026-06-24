@@ -39,8 +39,11 @@ import {CurrencyNFT} from "./CurrencyNFT.sol";
 ///   baked into the hash (via constructor params in initCode). You can't retroactively
 ///   lower your claim — preventing cherry-picking of lucky results.
 ///
-///   - If actual work >= target → "valid" share, credited at target (capped at 1% of pool)
-///   - If actual work < target → "invalid" share, credited at pool average
+///   Every share earns the pool average as a participation credit; a "valid" share
+///   (actual work >= target) earns its target work on top. The combined credit is
+///   capped at 1% of the pool total.
+///   - If actual work >= target → "valid" share, credited at average + target (capped at 1% of pool)
+///   - If actual work < target → "invalid" share, credited at pool average (capped at 1% of pool)
 ///   - Pool total ALWAYS gets the full actual work (uncapped)
 ///
 /// DAILY SNAPSHOTS:
@@ -269,7 +272,6 @@ contract MiningPool {
         // Must be strictly greater than the last submitted counter for this player+day.
         // The default lastShareCounter is 0 ("nothing submitted yet"), so the first
         // share of a day must use counter >= 1. Players simply start counting at 1.
-        // This lets us drop a separate "has submitted" flag and its per-day SSTORE.
         if (counter <= lastShareCounter[playerId][dayNumber]) {
             revert CounterNotIncreasing();
         }
@@ -294,25 +296,19 @@ contract MiningPool {
         if (actualWork < MIN_SHARE_WORK) revert BelowMinWork();
 
         // --- Calculate credit ---
-        uint256 credit;
-        bool valid;
+        // Participation credit: every accepted share earns the current pool average,
+        // rewarding the effort/gas spent even when the pre-committed target was missed.
+        // Performance bonus: a valid share (actual work met its target) additionally
+        // earns that target work. The combined credit is capped ONCE at 1% of the pool
+        // total so no single share can dominate future distributions — the pool's full
+        // actual work is still recorded uncapped below.
         uint256 maxCredit = totalIntegratedWork / MAX_SHARE_CREDIT_DIVISOR;
-
-        if (actualWork >= targetWork && targetWork > 0) {
-            // Valid share: credit = target work, capped at 1% of pool total.
-            // The cap prevents a single lucky share from dominating future distributions.
-            credit = Math.min(targetWork, maxCredit);
-            valid = true;
-        } else {
-            // TODO: make this not a branch but credit also valid shares?
-
-            // Invalid share (didn't meet target): credit = current average.
-            // This rewards participation even when the target was missed.
-            // Average = totalIntegratedWork / totalShareCount
-            credit = totalIntegratedWork / totalShareCount;
-            credit = Math.min(credit, maxCredit);
-            valid = false;
+        uint256 credit = totalIntegratedWork / totalShareCount; // pool average (participation)
+        bool valid = actualWork >= targetWork && targetWork > 0;
+        if (valid) {
+            credit += targetWork; // performance bonus for meeting the pre-committed target
         }
+        credit = Math.min(credit, maxCredit); // cap combined credit at 1% of pool total
 
         // --- Update state ---
 

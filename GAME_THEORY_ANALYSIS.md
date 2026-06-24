@@ -186,8 +186,10 @@ With 0 or 1 shares, the average reward is trivially manipulable. This is the col
 A player hits an astronomically lucky share whose actual work is far above the current pool scale. Without the cap, this single share could dominate all future distributions.
 
 ### How the Cap Works
-- **Player credit:** `min(targetWork, totalIntegratedWork / 100)` — at most 1% of pool
+- **Player credit:** `min(average + targetWork, totalIntegratedWork / 100)` for a valid share (the participation average plus the target performance bonus), capped — at most 1% of pool
 - **Pool total:** gets the FULL actual work, uncapped
+
+Because the cap is applied to the *combined* credit, a single share still cannot exceed 1% of the pool no matter how the participation and bonus terms stack.
 
 ### Effects
 1. The player gets a bounded reward (decent but not dominant)
@@ -224,6 +226,9 @@ Players could rush to submit invalid shares during this window, each getting the
 
 ### Verdict
 **A transient effect that self-corrects.** The minimum work threshold prevents pure exploitation. The window is a mild incentive for activity, not a critical vulnerability.
+
+### Related: No Incentive to Sandbag a Target
+Credit is `min(average + [valid]·target, cap)` — every share collects the average, and a valid share adds its target on top. Earlier, valid and invalid credit were mutually exclusive (`min(target, cap)` vs `min(average, cap)`), so a below-average player whose achievable target was less than the current average was strictly better off declaring an **unreachable** target and submitting an "invalid" share to collect the average. The combined-credit scheme removes this: a valid share is always worth at least as much as an invalid one, so honest target submission is weakly dominant and there is no reason to deliberately miss.
 
 ---
 

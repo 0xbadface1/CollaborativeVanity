@@ -208,7 +208,9 @@ The all-zero hash saturates to `uint256.max`, which is the largest representable
 
 Target work is baked into initCode (constructor params). Can't retroactively lower.
 
-- **Valid share** (actual >= target): credit = target, capped at 1% of pool total
+Every share earns the pool average as a participation credit; a valid share adds its target work as a performance bonus; the combined credit is capped once at 1% of the pool total.
+
+- **Valid share** (actual >= target): credit = average + target, capped at 1% of pool total
 - **Invalid share** (actual < target): credit = current pool average, capped at 1% of pool total
 - **Pool total**: always gets full uncapped actual work
 
@@ -216,10 +218,10 @@ Target work is baked into initCode (constructor params). Can't retroactively low
 
 | | Player's Credit | Pool's Total |
 |---|---|---|
-| Valid share | `min(target, totalWork / 100)` | Full actual work |
+| Valid share | `min(totalWork / totalShareCount + target, totalWork / 100)` | Full actual work |
 | Invalid share | `min(totalWork / totalShareCount, totalWork / 100)` | Full actual work |
 
-Lucky mega-shares boost the pool average for everyone — socialized luck.
+Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a valid share always scores at least as much as an invalid one (no incentive to deliberately miss a target to collect the average). Lucky mega-shares boost the pool average for everyone — socialized luck.
 
 ### Day Advancement
 
