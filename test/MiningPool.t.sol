@@ -174,6 +174,9 @@ contract MiningPoolTest is Test {
             dayHash = _precomputeDayHash(dayNumber);
         }
         (salt, actualWork) = _findValidSaltWithDayHash(player, dayNumber, targetWork, counter, 0, dayHash);
+        // submitShare now requires msg.sender == player, so submit AS the player.
+        // Every argument here is already a local, so the prank lands on submitShare —
+        // see the hoists in the direct-call tests for the case where it wouldn't.
         vm.prank(player);
         pool.submitShare(player, targetWork, dayNumber, counter, salt);
     }
@@ -220,6 +223,9 @@ contract MiningPoolTest is Test {
     }
 
     function test_submitShare_emitsEvent() public {
+        // Hoist MIN_SHARE_WORK into a local: the vm.prank() below must apply to
+        // submitShare, but an inline pool.MIN_SHARE_WORK() argument would be the
+        // "next call" and consume the prank instead, leaving submitShare unpranked.
         uint256 minWork = pool.MIN_SHARE_WORK();
         (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 0);
         uint256 playerId = uint256(uint160(player1));
@@ -265,6 +271,8 @@ contract MiningPoolTest is Test {
     function test_submitShare_anySaltWithValidCounter() public {
         // Salt is free — player can use any bytes32 value
         // Search for a valid salt starting from a large offset
+        // Hoist MIN_SHARE_WORK into a local so the vm.prank() below lands on
+        // submitShare rather than being consumed by an inline argument call.
         uint256 minWork = pool.MIN_SHARE_WORK();
         (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 5_000_000);
 
@@ -377,6 +385,8 @@ contract MiningPoolTest is Test {
 
     function test_submitShare_firstShareEver_getsTargetCredit() public {
         uint256 playerId = uint256(uint160(player1));
+        // Hoist MIN_SHARE_WORK into a local so the vm.prank() below lands on
+        // submitShare rather than being consumed by an inline argument call.
         uint256 minWork = pool.MIN_SHARE_WORK();
         (bytes32 salt, uint256 actualWork) = _findValidSalt(player1, 0, minWork, 1, 0);
 

@@ -100,6 +100,10 @@ contract TokenDistributionTest is Test {
             dayHash = _precomputeDayHash(dayNumber);
         }
 
+        // Read MIN_SHARE_WORK into a local first: submitShare requires
+        // msg.sender == player, and the vm.prank() below must apply to submitShare.
+        // An inline pool.MIN_SHARE_WORK() argument would be the "next call" and
+        // consume the prank, leaving submitShare unpranked and reverting.
         uint256 minWork = pool.MIN_SHARE_WORK();
         (bytes32 salt,) = _findValidSaltWithDayHash(player, dayNumber, minWork, counter, startSalt, dayHash);
         vm.prank(player);
@@ -110,6 +114,8 @@ contract TokenDistributionTest is Test {
     /// @param player Player receiving score credit
     /// @param counter Per-player day counter
     function _submitDay0Share(address player, uint256 counter) internal {
+        // Local MIN_SHARE_WORK so the vm.prank() lands on submitShare — an inline
+        // pool.MIN_SHARE_WORK() argument would consume the prank (see _submitShare).
         uint256 minWork = pool.MIN_SHARE_WORK();
         (bytes32 salt,) =
             _findValidSaltWithDayHash(player, 0, minWork, counter, counter * 1_000_000, pool.dayHashes(0));

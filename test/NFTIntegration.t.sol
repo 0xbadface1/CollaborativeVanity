@@ -62,6 +62,9 @@ contract NFTIntegrationTest is Test {
         returns (bytes32 salt, uint256 actualWork)
     {
         (salt, actualWork) = _findValidSalt(player, dayNumber, targetWork, counter, 0);
+        // submitShare requires msg.sender == player, so submit AS the player. Every
+        // argument is a local, so the prank applies to submitShare (not to an inline
+        // argument call, which would consume it — see _registerCurrency).
         vm.prank(player);
         pool.submitShare(player, targetWork, dayNumber, counter, salt);
     }
