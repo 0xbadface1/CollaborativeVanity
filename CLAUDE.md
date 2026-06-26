@@ -106,13 +106,13 @@ The pool is pre-seeded in the constructor so early shares score sanely against a
 
 ## Tests
 
-Three test suites, 92 tests total, all in `test/`:
+Three test suites, 97 tests total, all in `test/`:
 
 | Suite | Tests | Coverage |
 |---|---|---|
-| `MiningPool.t.sol` | 48 | Submission, ordering, work scoring, credits (incl. mature-pool combined credit via test harness), days, checkpoints, chain lock, dayHash, getCurrentDayHash |
-| `NFTIntegration.t.sol` | 25 | PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full mine-register-deploy flow |
-| `TokenDistribution.t.sol` | 19 | Distribution initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, auto-boost, multi-day flow, multiple currencies |
+| `MiningPool.t.sol` | 52 | Submission, ordering, work scoring, credits (incl. mature-pool combined credit via test harness), caller-is-player guard, days, checkpoints, chain lock, dayHash, getCurrentDayHash |
+| `NFTIntegration.t.sol` | 26 | PlayerNFT, CurrencyNFT, registration, caller-is-player guard, deployment, full mine-register-deploy flow |
+| `TokenDistribution.t.sol` | 19 | Distribution initialization, snapshot timing, claim math, PlayerNFT claim recipients, caller-is-owner guard, duplicate claims, auto-boost, multi-day flow, multiple currencies |
 
 Run: `~/.foundry/bin/forge test`
 Run with gas: `~/.foundry/bin/forge test --gas-report`
@@ -151,7 +151,8 @@ This codebase doubles as a Foundry learning resource. Add thorough documentation
 ## Implementation Status
 
 ### Phase 1: Core System — COMPLETE
-All core contracts and third-party submission/registration implemented.
+All core contracts implemented. Share submission and currency registration are
+self-only: `msg.sender` must equal the player.
 
 ### Phase 2: Token Distribution — COMPLETE
 - CurrencyToken initializes a fixed distribution supply from MiningPool and reads player/pool scores at snapshot day
@@ -199,7 +200,7 @@ These were discussed and decided. Context preserved here so future sessions don'
 
 8. **dayHash in initCode (not salt).** The unpredictable daily on-chain randomness is included as a CurrencyToken constructor param (in initCode), not mixed into the CREATE2 salt. This makes it explicit and consistent with the pattern of all committed values living in initCode. Prevents pre-computing shares for future days.
 
-9. **Explicit player parameter, not msg.sender.** `submitShare` and `registerCurrency` accept the player address as a parameter. The CREATE2 hash cryptographically binds the share/discovery to that address, so wrong addresses just produce invalid hashes. This enables gasless/relay submission. CurrencyNFTs are minted to the current PlayerNFT owner (not the caller or the original player address), so transferred PlayerNFTs carry discovery rights.
+9. **Caller must be the player.** `submitShare` and `registerCurrency` take the player address as a parameter and require `msg.sender == player`. The player is also committed in the CREATE2 hash, so the share/discovery is cryptographically bound to that identity. These are self-only operations — a caller can only mine and register under their own identity. CurrencyNFTs are still minted to the current PlayerNFT owner (not necessarily the original player address), so transferred PlayerNFTs carry discovery rights.
 
 10. **CurrencyNFT minted to PlayerNFT owner.** On `registerCurrency`, the CurrencyNFT goes to whoever currently owns the PlayerNFT for that playerId. If the PlayerNFT doesn't exist yet, it's lazy-minted first. This ensures that if a player sells their PlayerNFT (their "mining account"), all future discoveries associated with that playerId flow to the new owner.
 
@@ -221,6 +222,4 @@ These were discussed and decided. Context preserved here so future sessions don'
 
 7. **Off-chain mining client.** Not started. The on-chain contracts define the protocol; a GPU mining client (CUDA/OpenCL) would be needed for practical use. The off-chain workflow is documented in MiningPool.sol NatSpec.
 
-8. **Third-party share submission — PARTIALLY IMPLEMENTED.** `submitShare` and `registerCurrency` accept an explicit `player` address parameter (not derived from `msg.sender`). Anyone can submit shares or register currencies on behalf of a player. The CREATE2 hash binds cryptographically to the player address, so incorrect addresses just produce invalid hashes. CurrencyNFTs are minted to the current PlayerNFT owner, not the caller. **Still needed:** opt-in/out flag per player to disable third-party submissions if griefed (attacker could submit counter=max to block submissions). Per-day counters limit griefing damage to one day.
-
-9. **Per-day counters (not global).** The counter resets each day. This is intentional — a global counter would make the max-counter griefing attack (see #8) permanent instead of bounded to one day. The extra storage slot per (player, day) is worth the safety.
+8. **Per-day counters (not global).** The counter resets each day. The default `lastShareCounter` of 0 means "nothing submitted yet" for a (player, day), so the first share of a day must use counter >= 1 and no separate "has submitted" flag is needed. Resetting per day also keeps the counter space bounded and means a single accidentally-large counter only locks a player out of one day's address space rather than permanently. The extra storage slot per (player, day) is worth it.

@@ -55,10 +55,8 @@ Claude implied sequential counter usage. The user corrected: only ordering matte
 
 > "no need to use all values, we only check if internal share number submitted is larger (for a given day probably) than the last one. One can make big gaps and run in parallel multiple searches."
 
-### 10. Per-day counters, not global (griefing protection)
-Claude suggested global counters as a simplification. The user explained: with third-party submission, an attacker could submit counter=MAX and permanently brick a player with global counters. Per-day limits damage to one day.
-
-> "any attacker could submit a share with maximum counter and block your submissions — in per day design for one day... in global design, it would be forever..."
+### 10. Per-day counters, not global
+Claude suggested global counters as a simplification. The user kept counters per (player, day): the default `lastShareCounter` of 0 means "nothing submitted yet", so the first share of a day uses counter >= 1 and no separate "has submitted" flag is needed. Resetting per day also bounds the counter space and means a single accidentally-large counter only locks a player out of one day's address space rather than permanently.
 
 ---
 

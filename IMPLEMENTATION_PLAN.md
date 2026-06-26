@@ -84,7 +84,7 @@ CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 
 | Variable | Where | Role | Constraint |
 |---|---|---|---|
-| `playerId` | initCode | Player identity (= wallet address) | Explicit parameter (third-party submission OK) |
+| `playerId` | initCode | Player identity (= wallet address) | Explicit parameter; must equal `msg.sender` |
 | `dayNumber` | initCode | Time anchor | Must have valid dayHash |
 | `targetWork` | initCode | Pre-committed work bet | Anti-Sybil: can't retroactively lower |
 | `counter` | initCode | Share submission index | Strictly increasing per player per day |
@@ -133,7 +133,7 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 - `CurrencyNFT currencyNFT` — deployed by constructor
 
 **Key functions:**
-- `submitShare(player, targetWork, dayNumber, counter, salt)` — core share submission (anyone can submit on behalf of a player)
+- `submitShare(player, targetWork, dayNumber, counter, salt)` — core share submission (requires `msg.sender == player`)
 - `registerCurrency(player, counter, salt, dayNumber, targetWork)` → mints CurrencyNFT to current PlayerNFT owner
 - `deployCurrency(vanityAddress, totalSupply)` → CREATE2 deploys CurrencyToken, only by NFT owner
 - `getPlayerScoreAt(playerId, day)` → checkpoint binary search
@@ -242,8 +242,8 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
 - [x] `MiningPool.t.sol` — 44 tests covering submission, ordering, work, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
-- [x] `NFTIntegration.t.sol` — 25 tests covering PlayerNFT, CurrencyNFT, registration, deployment, third-party registration, full flow
-- [x] Third-party submission — `submitShare` and `registerCurrency` accept explicit player address; CurrencyNFT minted to current PlayerNFT owner
+- [x] `NFTIntegration.t.sol` — 26 tests covering PlayerNFT, CurrencyNFT, registration, caller-is-player guard, deployment, full flow
+- [x] Self-only submission — `submitShare` and `registerCurrency` require `msg.sender == player`; CurrencyNFT minted to current PlayerNFT owner
 - [x] Phase 1 tests passing before Phase 2 additions
 
 ### Phase 2: Token Distribution ✅ COMPLETE
@@ -254,7 +254,7 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 - [x] Player claim function (each player calls to receive their share)
 - [x] Auto-boost pool on currency deployment — add registered address full-hash work to `totalIntegratedWork` (not `totalShareCount`). Prevents withholding work from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [x] Integration tests for full mint flow
-- [x] `TokenDistribution.t.sol` — 19 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies, third-party claiming
+- [x] `TokenDistribution.t.sol` — 19 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, caller-is-owner guard, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies
 - [x] 88 tests total, all passing
 
 ### Phase 3: Polish & Edge Cases
@@ -326,4 +326,4 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 
 ---
 
-*v4 — June 2026. Incorporates: player terminology, counter/salt separation, initCode-based hash verification, on-chain bytecode hashing, O(1) day advancement, NFT integration, third-party submission/registration, implementation progress tracking.*
+*v4 — June 2026. Incorporates: player terminology, counter/salt separation, initCode-based hash verification, on-chain bytecode hashing, O(1) day advancement, NFT integration, self-only submission/registration/claims (`msg.sender` must match the player), implementation progress tracking.*

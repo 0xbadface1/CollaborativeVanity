@@ -110,7 +110,7 @@ address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 
 **This is prevented by design.** The registering player's playerId (= wallet address) is baked into the initCode constructor params. A different player using the same salt and counter produces a completely different initCodeHash — and therefore a different address.
 
-Note: `submitShare` and `registerCurrency` accept the player address as an explicit parameter (enabling third-party/gasless submission), but front-running is still impossible — the registered address is cryptographically bound to the original player's address, so an attacker substituting their own address produces a different result. The CurrencyNFT is always minted to the current owner of the player's PlayerNFT, not to the caller.
+Note: `submitShare` and `registerCurrency` require `msg.sender == player`, so an attacker cannot register a discovery under someone else's identity in the first place. Even setting that aside, front-running is impossible — the registered address is cryptographically bound to the original player's address, so an attacker substituting their own address produces a different result. The CurrencyNFT is always minted to the current owner of the player's PlayerNFT.
 
 ### Verdict
 **Prevented by the registering player's address being cryptographically bound to the initCode.** The protection comes from the CREATE2 hash construction, not from access control.
