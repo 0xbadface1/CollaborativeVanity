@@ -180,6 +180,7 @@ contract MiningPool {
     error DistributionSnapshotNotFrozen(uint256 snapshotDay, uint256 currentDay);
     error ZeroTotalSupply();
     error ZeroPlayer();
+    error CallerNotPlayer();
     error DeployedAddressMismatch(address expected, address deployed);
 
     // =========================================================================
@@ -226,10 +227,9 @@ contract MiningPool {
 
     /// @notice Submit a share (proof of work).
     ///
-    ///         Anyone can call this on behalf of a player — the player address is
-    ///         an explicit parameter, not derived from msg.sender. The CREATE2 hash
-    ///         binds the share to the player cryptographically, so submitting with
-    ///         a wrong player address just produces an invalid hash. Credits accrue
+    ///         The caller must be the player: `msg.sender` has to equal the `player`
+    ///         argument. The player address is also committed inside the CREATE2 hash,
+    ///         so the share is cryptographically bound to that identity. Credits accrue
     ///         to the player's checkpoint and the PlayerNFT owner benefits.
     ///
     /// HOW TO USE (off-chain):
@@ -259,6 +259,10 @@ contract MiningPool {
         // playerId 0 (the zero address) is not a usable identity — it would fail in
         // the downstream PlayerNFT mint anyway, but revert here with a clear error.
         if (player == address(0)) revert ZeroPlayer();
+
+        // --- Caller must be the player ---
+        // Shares are self-submitted: the caller can only mine under their own identity.
+        if (msg.sender != player) revert CallerNotPlayer();
 
         // --- Advance day if needed ---
         uint256 today = getCurrentDay();
@@ -468,13 +472,11 @@ contract MiningPool {
     /// @notice Register a discovered vanity address as a CurrencyNFT.
     ///
     ///         When a player finds a (counter, salt) pair that produces an address
-    ///         with an interesting pattern (0xBadFace, 0xDeadBeef, etc.), anyone can
-    ///         call this function to register it. The contract recomputes the CREATE2
-    ///         address and mints a CurrencyNFT to the player committed in the hash.
-    ///
-    ///         The caller does not need to be the player — third-party registration
-    ///         is safe because the NFT is always minted to the address embedded in
-    ///         the CREATE2 computation, not to msg.sender.
+    ///         with an interesting pattern (0xBadFace, 0xDeadBeef, etc.), they call
+    ///         this function to register it. The caller must be the player: `msg.sender`
+    ///         has to equal the `player` argument, which is also committed in the CREATE2
+    ///         hash. The contract recomputes the address and mints a CurrencyNFT to
+    ///         whoever currently owns the player's PlayerNFT.
     ///
     ///         The NFT grants the right to later deploy a CurrencyToken at that address.
     ///         The dayNumber determines which historical score snapshot is used for
@@ -494,6 +496,8 @@ contract MiningPool {
     {
         // Reject the zero address up front (clearer than the downstream PlayerNFT revert).
         if (player == address(0)) revert ZeroPlayer();
+        // The caller can only register a discovery under their own identity.
+        if (msg.sender != player) revert CallerNotPlayer();
         if (dayHashes[dayNumber] == bytes32(0)) revert InvalidDayNumber();
 
         uint256 playerId = uint256(uint160(player));

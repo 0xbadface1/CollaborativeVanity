@@ -100,18 +100,21 @@ contract TokenDistributionTest is Test {
             dayHash = _precomputeDayHash(dayNumber);
         }
 
-        (bytes32 salt,) =
-            _findValidSaltWithDayHash(player, dayNumber, pool.MIN_SHARE_WORK(), counter, startSalt, dayHash);
-        pool.submitShare(player, pool.MIN_SHARE_WORK(), dayNumber, counter, salt);
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        (bytes32 salt,) = _findValidSaltWithDayHash(player, dayNumber, minWork, counter, startSalt, dayHash);
+        vm.prank(player);
+        pool.submitShare(player, minWork, dayNumber, counter, salt);
     }
 
     /// @notice Submit a valid day-0 share with the minimum target work.
     /// @param player Player receiving score credit
     /// @param counter Per-player day counter
     function _submitDay0Share(address player, uint256 counter) internal {
+        uint256 minWork = pool.MIN_SHARE_WORK();
         (bytes32 salt,) =
-            _findValidSaltWithDayHash(player, 0, pool.MIN_SHARE_WORK(), counter, counter * 1_000_000, pool.dayHashes(0));
-        pool.submitShare(player, pool.MIN_SHARE_WORK(), 0, counter, salt);
+            _findValidSaltWithDayHash(player, 0, minWork, counter, counter * 1_000_000, pool.dayHashes(0));
+        vm.prank(player);
+        pool.submitShare(player, minWork, 0, counter, salt);
     }
 
     /// @notice Build a known day-0 score snapshot: player1 has one share,
@@ -128,7 +131,29 @@ contract TokenDistributionTest is Test {
     function _registerDay1Currency(bytes32 salt) internal returns (address vanity) {
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         pool.getCurrentDayHash();
-        vanity = pool.registerCurrency(player1, 100, salt, 1, pool.MIN_SHARE_WORK());
+        vanity = _registerCurrency(player1, 100, salt, 1, pool.MIN_SHARE_WORK());
+    }
+
+    /// @notice Register a currency as `player`, pranking so msg.sender matches the
+    ///         player identity. Arguments are evaluated by the caller before the prank,
+    ///         so an inline `pool.MIN_SHARE_WORK()` argument cannot consume it.
+    function _registerCurrency(
+        address player,
+        uint256 counter,
+        bytes32 salt,
+        uint256 dayNumber,
+        uint256 targetWork
+    ) internal returns (address vanityAddress) {
+        vm.prank(player);
+        vanityAddress = pool.registerCurrency(player, counter, salt, dayNumber, targetWork);
+    }
+
+    /// @notice Claim a currency allocation as the current PlayerNFT owner. Resolves the
+    ///         owner of `claimPlayerId` and pranks so msg.sender matches that owner.
+    function _claim(CurrencyToken token, uint256 claimPlayerId) internal returns (uint256) {
+        address owner = playerNFT.ownerOf(claimPlayerId);
+        vm.prank(owner);
+        return token.claim(claimPlayerId);
     }
 
     /// @notice Register and deploy a day-1 currency with the standard test supply.
@@ -201,7 +226,7 @@ contract TokenDistributionTest is Test {
     }
 
     function testRevert_deployCurrency_beforeSnapshotDayPasses() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(502)), 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, bytes32(uint256(502)), 0, pool.MIN_SHARE_WORK());
 
         vm.prank(player1);
         vm.expectRevert(abi.encodeWithSelector(MiningPool.DistributionSnapshotNotFrozen.selector, 0, 0));
@@ -209,7 +234,7 @@ contract TokenDistributionTest is Test {
     }
 
     function testRevert_deployCurrency_zeroTotalSupply() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(503)), 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, bytes32(uint256(503)), 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -231,7 +256,7 @@ contract TokenDistributionTest is Test {
 
         uint256 expectedProportional = DISTRIBUTION_SUPPLY * 99 * playerScore / (100 * poolScore);
         uint256 expectedBonus = DISTRIBUTION_SUPPLY / 100;
-        uint256 claimed = token.claim(playerId);
+        uint256 claimed = _claim(token, playerId);
 
         assertEq(claimed, expectedProportional + expectedBonus);
         assertEq(token.balanceOf(player1), expectedProportional + expectedBonus);
@@ -247,7 +272,7 @@ contract TokenDistributionTest is Test {
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(505)));
 
         uint256 expected = DISTRIBUTION_SUPPLY * 99 * playerScore / (100 * poolScore);
-        uint256 claimed = token.claim(playerId);
+        uint256 claimed = _claim(token, playerId);
 
         assertEq(claimed, expected);
         assertEq(token.balanceOf(player2), expected);
@@ -261,7 +286,7 @@ contract TokenDistributionTest is Test {
         playerNFT.transferFrom(player2, player3, playerId);
 
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(506)));
-        uint256 claimed = token.claim(playerId);
+        uint256 claimed = _claim(token, playerId);
 
         assertEq(token.balanceOf(player2), 0);
         assertEq(token.balanceOf(player3), claimed);
@@ -272,20 +297,36 @@ contract TokenDistributionTest is Test {
         uint256 playerId = uint256(uint160(player1));
 
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(507)));
-        token.claim(playerId);
+        _claim(token, playerId);
 
+        // Second claim reverts on the already-claimed flag, before the owner guard,
+        // so the caller identity does not matter here.
         vm.expectRevert(abi.encodeWithSelector(CurrencyToken.AlreadyClaimed.selector, playerId));
+        token.claim(playerId);
+    }
+
+    function testRevert_claim_callerNotOwner() public {
+        _buildDay0Scores();
+        uint256 playerId = uint256(uint160(player1));
+        (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(516)));
+
+        // player3 does not own player1's PlayerNFT, so it cannot claim that allocation.
+        vm.expectRevert(CurrencyToken.CallerNotOwner.selector);
+        vm.prank(player3);
         token.claim(playerId);
     }
 
     function testRevert_claim_zeroScoreNonDiscovererGetsNothing() public {
         _buildDay0Scores();
         uint256 playerId = uint256(uint160(player3));
-        pool.registerCurrency(player3, 0, bytes32(uint256(900)), 0, pool.MIN_SHARE_WORK());
+        _registerCurrency(player3, 0, bytes32(uint256(900)), 0, pool.MIN_SHARE_WORK());
 
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(508)));
 
+        // player3 owns its PlayerNFT (lazy-minted on registration), so it passes the
+        // owner guard but then has nothing to claim on this day-1 discovery.
         vm.expectRevert(abi.encodeWithSelector(CurrencyToken.NothingToClaim.selector, playerId));
+        vm.prank(player3);
         token.claim(playerId);
     }
 
@@ -293,8 +334,8 @@ contract TokenDistributionTest is Test {
         _buildDay0Scores();
         (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(509)));
 
-        token.claim(uint256(uint160(player1)));
-        token.claim(uint256(uint160(player2)));
+        _claim(token, uint256(uint160(player1)));
+        _claim(token, uint256(uint160(player2)));
 
         assertLe(token.totalSupply(), DISTRIBUTION_SUPPLY);
     }
@@ -312,7 +353,7 @@ contract TokenDistributionTest is Test {
         CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 
         uint256 expected = DISTRIBUTION_SUPPLY * 99 * playerScore / (100 * poolScore);
-        uint256 claimed = token.claim(playerId);
+        uint256 claimed = _claim(token, playerId);
 
         assertEq(token.snapshotDay(), 0);
         assertEq(claimed, expected, "day-1 score must not affect day-1 discovery");
@@ -330,23 +371,10 @@ contract TokenDistributionTest is Test {
         _submitShare(player2, 2, 1, 4_000_000);
 
         uint256 expected = DISTRIBUTION_SUPPLY * 99 * playerScore / (100 * poolScore);
-        uint256 claimed = token.claim(playerId);
+        uint256 claimed = _claim(token, playerId);
 
         assertEq(token.snapshotDay(), 0);
         assertEq(claimed, expected, "post-discovery score must not affect distribution");
-    }
-
-    function test_claim_thirdPartyCanCall() public {
-        _buildDay0Scores();
-        uint256 playerId = uint256(uint160(player1));
-
-        (CurrencyToken token,) = _deployDay1Currency(bytes32(uint256(512)));
-
-        vm.prank(player3);
-        uint256 claimed = token.claim(playerId);
-
-        assertEq(token.balanceOf(player1), claimed, "tokens mint to PlayerNFT owner");
-        assertEq(token.balanceOf(player3), 0, "caller receives nothing");
     }
 
     function test_claim_usesFullPrecisionMulDivForLargeValues() public {
@@ -361,7 +389,7 @@ contract TokenDistributionTest is Test {
 
         uint256 expectedProportional = hugeSupply * 99 / 100;
         uint256 expectedBonus = hugeSupply / 100;
-        uint256 claimed = token.claim(playerId);
+        uint256 claimed = _claim(token, playerId);
 
         assertEq(claimed, expectedProportional + expectedBonus);
         assertEq(token.balanceOf(player1), claimed);
@@ -376,7 +404,10 @@ contract TokenDistributionTest is Test {
         CurrencyToken token = new CurrencyToken(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
         token.initializeDistribution(DISTRIBUTION_SUPPLY);
 
+        // player1 owns its PlayerNFT, so it clears the owner guard and reaches the
+        // playerScore <= poolScore assertion that the mock deliberately violates.
         vm.expectRevert(stdError.assertionError);
+        vm.prank(player1);
         token.claim(playerId);
     }
 
@@ -404,7 +435,7 @@ contract TokenDistributionTest is Test {
 
         vm.warp(pool.dayZeroTimestamp() + 2 days);
         pool.getCurrentDayHash();
-        address vanity = pool.registerCurrency(player1, 200, bytes32(uint256(513)), 2, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 200, bytes32(uint256(513)), 2, pool.MIN_SHARE_WORK());
 
         vm.prank(player1);
         CurrencyToken token = pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
@@ -413,9 +444,9 @@ contract TokenDistributionTest is Test {
         uint256 p2Expected = DISTRIBUTION_SUPPLY * 99 * p2Score / (100 * poolScore);
         uint256 p3Expected = DISTRIBUTION_SUPPLY * 99 * p3Score / (100 * poolScore);
 
-        assertEq(token.claim(p1Id), p1Expected);
-        assertEq(token.claim(p2Id), p2Expected);
-        assertEq(token.claim(p3Id), p3Expected);
+        assertEq(_claim(token, p1Id), p1Expected);
+        assertEq(_claim(token, p2Id), p2Expected);
+        assertEq(_claim(token, p3Id), p3Expected);
         assertEq(token.balanceOf(player1), p1Expected);
         assertEq(token.balanceOf(player2), p2Expected);
         assertEq(token.balanceOf(player3), p3Expected);
@@ -440,7 +471,7 @@ contract TokenDistributionTest is Test {
 
         vm.warp(pool.dayZeroTimestamp() + 2 days);
         pool.getCurrentDayHash();
-        address vanityTwo = pool.registerCurrency(player2, 300, bytes32(uint256(515)), 2, pool.MIN_SHARE_WORK());
+        address vanityTwo = _registerCurrency(player2, 300, bytes32(uint256(515)), 2, pool.MIN_SHARE_WORK());
 
         vm.prank(player2);
         CurrencyToken tokenTwo = pool.deployCurrency(vanityTwo, SECOND_DISTRIBUTION_SUPPLY);
@@ -450,15 +481,18 @@ contract TokenDistributionTest is Test {
             + SECOND_DISTRIBUTION_SUPPLY / 100;
         uint256 tokenTwoP3Expected = SECOND_DISTRIBUTION_SUPPLY * 99 * currencyTwoP3Score / (100 * currencyTwoPoolScore);
 
-        assertEq(tokenOne.claim(p2Id), tokenOneP2Expected);
+        assertEq(_claim(tokenOne, p2Id), tokenOneP2Expected);
         assertEq(tokenOne.balanceOf(player2), tokenOneP2Expected);
 
-        assertEq(tokenTwo.claim(p2Id), tokenTwoP2Expected);
-        assertEq(tokenTwo.claim(p3Id), tokenTwoP3Expected);
+        assertEq(_claim(tokenTwo, p2Id), tokenTwoP2Expected);
+        assertEq(_claim(tokenTwo, p3Id), tokenTwoP3Expected);
         assertEq(tokenTwo.balanceOf(player2), tokenTwoP2Expected);
         assertEq(tokenTwo.balanceOf(player3), tokenTwoP3Expected);
 
+        // player3 owns its PlayerNFT, so it clears the owner guard but had no score on
+        // currency one's day-0 snapshot, leaving nothing to claim there.
         vm.expectRevert(abi.encodeWithSelector(CurrencyToken.NothingToClaim.selector, p3Id));
+        vm.prank(player3);
         tokenOne.claim(p3Id);
     }
 
@@ -477,7 +511,7 @@ contract TokenDistributionTest is Test {
         uint256 shareCountBefore = pool.totalShareCount();
         uint256 poolScoreBefore = pool.getPoolScoreAt(0);
 
-        address vanity = pool.registerCurrency(player1, 100, salt, 1, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 100, salt, 1, pool.MIN_SHARE_WORK());
         vm.prank(player1);
         pool.deployCurrency(vanity, DISTRIBUTION_SUPPLY);
 

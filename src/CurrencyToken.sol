@@ -106,6 +106,7 @@ contract CurrencyToken is ERC20 {
     error DistributionHasNoPoolScore();
     error AlreadyClaimed(uint256 playerId);
     error NothingToClaim(uint256 playerId);
+    error CallerNotOwner();
 
     event DistributionInitialized(uint256 distributionSupply, uint256 snapshotDay, uint256 poolScoreAtSnapshot);
 
@@ -165,15 +166,10 @@ contract CurrencyToken is ERC20 {
     ///
     ///         Claims are pull-based: the contract does not loop over all players
     ///         because the MiningPool cannot enumerate every participant cheaply.
-    ///         Any address may call this function, but tokens are minted to the
-    ///         current owner of the PlayerNFT for `claimPlayerId`. This makes the
-    ///         PlayerNFT the bearer asset for historical score rights.
-    ///
-    /// TODO: consider allowing only the NFT owner to be able to call this - why?
-    /// Claiming the token is the "social" or "attention" proof - so we do not want people
-    /// for others. Doing favor to others by giving them shares is fine. Registering currency
-    /// for them probably as well (discovered by them or a "friend" mining under foreign address).
-    /// But all these should be eventually re-considered again.
+    ///         The caller must be the current owner of the PlayerNFT for
+    ///         `claimPlayerId` — that owner claims their own allocation, and the
+    ///         tokens are minted to them. The PlayerNFT is the bearer asset for
+    ///         historical score rights.
     ///
     ///         Distribution formula:
     ///
@@ -192,6 +188,10 @@ contract CurrencyToken is ERC20 {
         if (!initialized) revert DistributionNotInitialized();
         if (claimed[claimPlayerId]) revert AlreadyClaimed(claimPlayerId);
 
+        // The caller must own the PlayerNFT whose allocation is being claimed.
+        address owner = IMiningPool(miningPool).playerNFT().ownerOf(claimPlayerId);
+        if (msg.sender != owner) revert CallerNotOwner();
+
         uint256 playerScore = IMiningPool(miningPool).getPlayerScoreAt(claimPlayerId, snapshotDay);
         // Redundant invariant check: MiningPool should never report a player
         // score above the pool score at the same snapshot.
@@ -205,9 +205,8 @@ contract CurrencyToken is ERC20 {
 
         claimed[claimPlayerId] = true;
 
-        address recipient = IMiningPool(miningPool).playerNFT().ownerOf(claimPlayerId);
-        _mint(recipient, amount);
+        _mint(owner, amount);
 
-        emit Claimed(claimPlayerId, recipient, amount, proportionalAmount, discovererBonus);
+        emit Claimed(claimPlayerId, owner, amount, proportionalAmount, discovererBonus);
     }
 }

@@ -174,6 +174,7 @@ contract MiningPoolTest is Test {
             dayHash = _precomputeDayHash(dayNumber);
         }
         (salt, actualWork) = _findValidSaltWithDayHash(player, dayNumber, targetWork, counter, 0, dayHash);
+        vm.prank(player);
         pool.submitShare(player, targetWork, dayNumber, counter, salt);
     }
 
@@ -219,7 +220,8 @@ contract MiningPoolTest is Test {
     }
 
     function test_submitShare_emitsEvent() public {
-        (bytes32 salt,) = _findValidSalt(player1, 0, pool.MIN_SHARE_WORK(), 1, 0);
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 0);
         uint256 playerId = uint256(uint160(player1));
 
         vm.expectEmit(true, true, false, false);
@@ -234,7 +236,8 @@ contract MiningPoolTest is Test {
             false // data fields — not checked
         );
 
-        pool.submitShare(player1, pool.MIN_SHARE_WORK(), 0, 1, salt);
+        vm.prank(player1);
+        pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
     function test_submitShare_multipleSharesSameDay() public {
@@ -262,9 +265,11 @@ contract MiningPoolTest is Test {
     function test_submitShare_anySaltWithValidCounter() public {
         // Salt is free — player can use any bytes32 value
         // Search for a valid salt starting from a large offset
-        (bytes32 salt,) = _findValidSalt(player1, 0, pool.MIN_SHARE_WORK(), 1, 5_000_000);
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 5_000_000);
 
-        pool.submitShare(player1, pool.MIN_SHARE_WORK(), 0, 1, salt);
+        vm.prank(player1);
+        pool.submitShare(player1, minWork, 0, 1, salt);
 
         assertEq(pool.totalShareCount(), pool.BOOTSTRAP_SHARE_COUNT() + 1);
     }
@@ -279,6 +284,7 @@ contract MiningPoolTest is Test {
         uint256 minWork = _minShareWork();
         (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 0, 0);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
+        vm.prank(player1);
         pool.submitShare(player1, minWork, 0, 0, salt);
     }
 
@@ -289,6 +295,7 @@ contract MiningPoolTest is Test {
         // Try counter=1 again — should revert (must be strictly increasing)
         (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 999_999);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
+        vm.prank(player1);
         pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
@@ -299,6 +306,7 @@ contract MiningPoolTest is Test {
         // Try counter=3 (lower than 5) — should revert
         (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 3, 0);
         vm.expectRevert(MiningPool.CounterNotIncreasing.selector);
+        vm.prank(player1);
         pool.submitShare(player1, minWork, 0, 3, salt);
     }
 
@@ -319,6 +327,7 @@ contract MiningPoolTest is Test {
         bytes32 salt = _findBelowMinSalt(player1, 0, minWork, 1);
 
         vm.expectRevert(MiningPool.BelowMinWork.selector);
+        vm.prank(player1);
         pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
@@ -330,6 +339,16 @@ contract MiningPoolTest is Test {
         uint256 minWork = pool.MIN_SHARE_WORK();
         vm.expectRevert(MiningPool.ZeroPlayer.selector);
         pool.submitShare(address(0), minWork, 0, 1, bytes32(0));
+    }
+
+    function testRevert_submitShare_callerNotPlayer() public {
+        // Shares are self-submitted: a caller cannot mine under someone else's
+        // identity. player2 attempting to submit for player1 must revert.
+        uint256 minWork = _minShareWork();
+        (bytes32 salt,) = _findValidSalt(player1, 0, minWork, 1, 0);
+        vm.expectRevert(MiningPool.CallerNotPlayer.selector);
+        vm.prank(player2);
+        pool.submitShare(player1, minWork, 0, 1, salt);
     }
 
     function test_submitShare_invalidShare_belowTarget() public {
@@ -344,6 +363,7 @@ contract MiningPoolTest is Test {
 
         uint256 scoreBefore = pool.getPlayerScoreAt(player2Id, 0);
         (bytes32 salt,) = _findValidSalt(player2, 0, unreachableTargetWork, 1, 0);
+        vm.prank(player2);
         pool.submitShare(player2, unreachableTargetWork, 0, 1, salt);
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
 
@@ -357,13 +377,15 @@ contract MiningPoolTest is Test {
 
     function test_submitShare_firstShareEver_getsTargetCredit() public {
         uint256 playerId = uint256(uint160(player1));
-        (bytes32 salt, uint256 actualWork) = _findValidSalt(player1, 0, pool.MIN_SHARE_WORK(), 1, 0);
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        (bytes32 salt, uint256 actualWork) = _findValidSalt(player1, 0, minWork, 1, 0);
 
-        pool.submitShare(player1, pool.MIN_SHARE_WORK(), 0, 1, salt);
+        vm.prank(player1);
+        pool.submitShare(player1, minWork, 0, 1, salt);
 
         uint256 playerScore = pool.getPlayerScoreAt(playerId, 0);
-        assertGe(actualWork, pool.MIN_SHARE_WORK());
-        assertEq(playerScore, pool.MIN_SHARE_WORK(), "First valid share credit = targetWork");
+        assertGe(actualWork, minWork);
+        assertEq(playerScore, minWork, "First valid share credit = targetWork");
     }
 
     function test_submitShare_poolGetsFullActualWork() public {
@@ -390,6 +412,7 @@ contract MiningPoolTest is Test {
 
         uint256 unreachableTargetWork = 1 << 128;
         (bytes32 salt,) = _findValidSalt(player2, 0, unreachableTargetWork, 1, 0);
+        vm.prank(player2);
         pool.submitShare(player2, unreachableTargetWork, 0, 1, salt);
 
         uint256 scoreAfter = pool.getPlayerScoreAt(player2Id, 0);
@@ -438,6 +461,7 @@ contract MiningPoolTest is Test {
 
         uint256 playerId = uint256(uint160(player1));
         (bytes32 salt,) = _findValidSalt(player1, 0, target, 1, 0);
+        vm.prank(player1);
         pool.submitShare(player1, target, 0, 1, salt);
 
         assertEq(
@@ -465,6 +489,7 @@ contract MiningPoolTest is Test {
 
         uint256 playerId = uint256(uint160(player1));
         (bytes32 salt,) = _findValidSalt(player1, 0, target, 1, 0);
+        vm.prank(player1);
         pool.submitShare(player1, target, 0, 1, salt);
 
         assertEq(pool.getPlayerScoreAt(playerId, 0), cap, "Combined credit capped at 1% of the pool");
@@ -483,6 +508,7 @@ contract MiningPoolTest is Test {
         // Invalid share (target unreachable -> actual < target): credit = min(average, cap).
         pool.setPoolAggregates(shareCount, integratedWork);
         (bytes32 invalidSalt,) = _findValidSalt(player2, 0, unreachableTarget, 1, 0);
+        vm.prank(player2);
         pool.submitShare(player2, unreachableTarget, 0, 1, invalidSalt);
         uint256 invalidCredit = pool.getPlayerScoreAt(player2Id, 0);
 
@@ -490,6 +516,7 @@ contract MiningPoolTest is Test {
         pool.setPoolAggregates(shareCount, integratedWork);
         uint256 target = pool.MIN_SHARE_WORK();
         (bytes32 validSalt,) = _findValidSalt(player1, 0, target, 1, 0);
+        vm.prank(player1);
         pool.submitShare(player1, target, 0, 1, validSalt);
         uint256 validCredit = pool.getPlayerScoreAt(player1Id, 0);
 
@@ -564,6 +591,7 @@ contract MiningPoolTest is Test {
     function testRevert_submitShare_futureDayNumber() public {
         uint256 minWork = _minShareWork();
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
+        vm.prank(player1);
         pool.submitShare(player1, minWork, 1, 0, bytes32(uint256(42)));
     }
 
@@ -575,6 +603,7 @@ contract MiningPoolTest is Test {
         uint256 minWork = _minShareWork();
         (bytes32 salt,) = _findValidSalt(player1, 3, minWork, 0, 0);
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
+        vm.prank(player1);
         pool.submitShare(player1, minWork, 3, 0, salt);
     }
 

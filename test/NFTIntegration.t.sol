@@ -62,7 +62,24 @@ contract NFTIntegrationTest is Test {
         returns (bytes32 salt, uint256 actualWork)
     {
         (salt, actualWork) = _findValidSalt(player, dayNumber, targetWork, counter, 0);
+        vm.prank(player);
         pool.submitShare(player, targetWork, dayNumber, counter, salt);
+    }
+
+    /// @notice Register a currency as `player`. Convenience wrapper that pranks the
+    ///         caller so msg.sender matches the player identity. Because the arguments
+    ///         are evaluated by the caller before this function runs, any inline
+    ///         `pool.MIN_SHARE_WORK()` argument cannot accidentally consume the prank
+    ///         (the vm.prank below applies to the very next call — registerCurrency).
+    function _registerCurrency(
+        address player,
+        uint256 counter,
+        bytes32 salt,
+        uint256 dayNumber,
+        uint256 targetWork
+    ) internal returns (address vanityAddress) {
+        vm.prank(player);
+        vanityAddress = pool.registerCurrency(player, counter, salt, dayNumber, targetWork);
     }
 
     // =========================================================================
@@ -126,7 +143,7 @@ contract NFTIntegrationTest is Test {
     // =========================================================================
 
     function test_registerCurrency_basic() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(12345)), 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, bytes32(uint256(12345)), 0, pool.MIN_SHARE_WORK());
 
         assertTrue(currencyNFT.isRegistered(vanity));
         uint256 tokenId = uint256(uint160(vanity));
@@ -139,7 +156,7 @@ contract NFTIntegrationTest is Test {
         uint256 dayNumber = 0;
         uint256 targetWork = 1_000_000;
 
-        address vanity = pool.registerCurrency(player1, counter, salt, dayNumber, targetWork);
+        address vanity = _registerCurrency(player1, counter, salt, dayNumber, targetWork);
 
         uint256 tokenId = uint256(uint160(vanity));
         CurrencyNFT.CurrencyDiscovery memory disc = currencyNFT.getDiscovery(tokenId);
@@ -160,7 +177,7 @@ contract NFTIntegrationTest is Test {
 
         address expected = pool.computeVanityAddress(player1, counter, salt, 0, pool.MIN_SHARE_WORK(), dayHash);
 
-        address actual = pool.registerCurrency(player1, counter, salt, 0, pool.MIN_SHARE_WORK());
+        address actual = _registerCurrency(player1, counter, salt, 0, pool.MIN_SHARE_WORK());
 
         assertEq(actual, expected, "Registered address should match computed address");
     }
@@ -171,23 +188,23 @@ contract NFTIntegrationTest is Test {
         vm.expectEmit(true, false, false, false);
         emit MiningPool.CurrencyRegistered(playerId, address(0), 0, 0);
 
-        pool.registerCurrency(player1, 0, bytes32(uint256(100)), 0, pool.MIN_SHARE_WORK());
+        _registerCurrency(player1, 0, bytes32(uint256(100)), 0, pool.MIN_SHARE_WORK());
     }
 
     function testRevert_registerCurrency_duplicateAddress() public {
         uint256 minWork = pool.MIN_SHARE_WORK();
         bytes32 salt = bytes32(uint256(100));
-        pool.registerCurrency(player1, 0, salt, 0, minWork);
+        _registerCurrency(player1, 0, salt, 0, minWork);
 
         // Same params → same address → should revert
         vm.expectRevert(MiningPool.CurrencyAlreadyRegistered.selector);
-        pool.registerCurrency(player1, 0, salt, 0, minWork);
+        _registerCurrency(player1, 0, salt, 0, minWork);
     }
 
     function testRevert_registerCurrency_invalidDay() public {
         uint256 minWork = pool.MIN_SHARE_WORK();
         vm.expectRevert(MiningPool.InvalidDayNumber.selector);
-        pool.registerCurrency(player1, 0, bytes32(uint256(100)), 5, minWork);
+        _registerCurrency(player1, 0, bytes32(uint256(100)), 5, minWork);
     }
 
     function testRevert_registerCurrency_zeroPlayer() public {
@@ -198,15 +215,14 @@ contract NFTIntegrationTest is Test {
         pool.registerCurrency(address(0), 0, bytes32(uint256(1)), 0, minWork);
     }
 
-    function test_registerCurrency_thirdPartyRegistration() public {
+    function testRevert_registerCurrency_callerNotPlayer() public {
+        // A discovery can only be registered by its own player. player2 attempting
+        // to register under player1's identity must revert.
         bytes32 salt = bytes32(uint256(42));
-
-        // player2 registers a currency on behalf of player1 — NFT goes to player1
+        uint256 minWork = pool.MIN_SHARE_WORK();
+        vm.expectRevert(MiningPool.CallerNotPlayer.selector);
         vm.prank(player2);
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
-
-        uint256 tokenId = uint256(uint160(vanity));
-        assertEq(currencyNFT.ownerOf(tokenId), player1, "NFT minted to PlayerNFT owner, not caller");
+        pool.registerCurrency(player1, 0, salt, 0, minWork);
     }
 
     function test_registerCurrency_mintsToPlayerNFTOwner() public {
@@ -220,7 +236,7 @@ contract NFTIntegrationTest is Test {
 
         // Register a currency for player1's address — should go to player2 (current NFT owner)
         bytes32 salt = bytes32(uint256(42));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         uint256 currencyTokenId = uint256(uint160(vanity));
         assertEq(currencyNFT.ownerOf(currencyTokenId), player2, "CurrencyNFT goes to current PlayerNFT owner");
@@ -230,7 +246,7 @@ contract NFTIntegrationTest is Test {
         // player1 has never submitted a share — no PlayerNFT yet
         assertFalse(playerNFT.isRegistered(player1));
 
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(42)), 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, bytes32(uint256(42)), 0, pool.MIN_SHARE_WORK());
 
         // PlayerNFT should have been lazy-minted
         assertTrue(playerNFT.isRegistered(player1));
@@ -240,7 +256,7 @@ contract NFTIntegrationTest is Test {
     }
 
     function test_registerCurrency_nftTransferable() public {
-        address vanity = pool.registerCurrency(player1, 0, bytes32(uint256(100)), 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, bytes32(uint256(100)), 0, pool.MIN_SHARE_WORK());
         uint256 tokenId = uint256(uint160(vanity));
 
         vm.prank(player1);
@@ -255,7 +271,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_basic() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -275,7 +291,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_markedAsDeployed() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -288,7 +304,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_emitsEvent() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.expectEmit(true, false, false, false);
         emit MiningPool.CurrencyDeployed(vanity, address(0), 0, 0);
@@ -300,7 +316,7 @@ contract NFTIntegrationTest is Test {
 
     function test_deployCurrency_byNftTransferRecipient() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
         uint256 tokenId = uint256(uint160(vanity));
 
         vm.prank(player1);
@@ -315,7 +331,7 @@ contract NFTIntegrationTest is Test {
 
     function testRevert_deployCurrency_notOwner() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player2);
@@ -325,7 +341,7 @@ contract NFTIntegrationTest is Test {
 
     function testRevert_deployCurrency_alreadyDeployed() public {
         bytes32 salt = bytes32(uint256(500));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
 
         vm.warp(pool.dayZeroTimestamp() + 1 days);
         vm.prank(player1);
@@ -353,7 +369,7 @@ contract NFTIntegrationTest is Test {
 
         // 2. Player discovers and registers a vanity address
         bytes32 salt = bytes32(uint256(777));
-        address vanity = pool.registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
+        address vanity = _registerCurrency(player1, 0, salt, 0, pool.MIN_SHARE_WORK());
         assertTrue(currencyNFT.isRegistered(vanity), "Currency should be registered");
 
         // 3. Player deploys the CurrencyToken at the vanity address
