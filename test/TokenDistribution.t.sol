@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {stdError} from "forge-std/StdError.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {MiningPool} from "../src/MiningPool.sol";
 import {PlayerNFT} from "../src/PlayerNFT.sol";
 import {CurrencyToken} from "../src/CurrencyToken.sol";
@@ -200,6 +201,24 @@ contract TokenDistributionTest is Test {
         return mockPoolScore;
     }
 
+    /// @notice Deploy a CurrencyToken clone wired to this test contract as the mock pool.
+    /// @dev CurrencyToken is now a clone implementation: per-instance params live in the
+    ///      proxy's immutable args, not the constructor. This mirrors how
+    ///      MiningPool.deployCurrency clones currencyImpl, but points the implementation's
+    ///      miningPool at this test contract so the mock getPoolScoreAt/getPlayerScoreAt
+    ///      (and the real playerNFT) are used for unit-level claim/initialization tests.
+    function _deployMockClone(
+        uint256 playerId,
+        uint256 dayNumber,
+        uint256 targetWork,
+        uint256 counter,
+        bytes32 dayHash
+    ) internal returns (CurrencyToken) {
+        CurrencyToken impl = new CurrencyToken(address(this));
+        bytes memory args = abi.encode(playerId, dayNumber, targetWork, counter, dayHash);
+        return CurrencyToken(Clones.cloneWithImmutableArgs(address(impl), args));
+    }
+
     // =========================================================================
     //                         INITIALIZATION TESTS
     // =========================================================================
@@ -225,7 +244,7 @@ contract TokenDistributionTest is Test {
 
     function testRevert_claim_beforeInitialized() public {
         CurrencyToken token =
-            new CurrencyToken(uint256(uint160(player1)), 0, pool.MIN_SHARE_WORK(), 0, bytes32(uint256(123)));
+            _deployMockClone(uint256(uint160(player1)), 0, pool.MIN_SHARE_WORK(), 0, bytes32(uint256(123)));
 
         vm.expectRevert(CurrencyToken.DistributionNotInitialized.selector);
         token.claim(uint256(uint160(player1)));
@@ -390,7 +409,7 @@ contract TokenDistributionTest is Test {
         mockPlayerScore = 1 << 200;
         mockPoolScore = mockPlayerScore;
 
-        CurrencyToken token = new CurrencyToken(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
+        CurrencyToken token = _deployMockClone(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
         token.initializeDistribution(hugeSupply);
 
         uint256 expectedProportional = hugeSupply * 99 / 100;
@@ -407,7 +426,7 @@ contract TokenDistributionTest is Test {
         mockPlayerScore = 2_000;
         mockPoolScore = 1_000;
 
-        CurrencyToken token = new CurrencyToken(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
+        CurrencyToken token = _deployMockClone(playerId, 0, pool.MIN_SHARE_WORK(), 0, pool.dayHashes(0));
         token.initializeDistribution(DISTRIBUTION_SUPPLY);
 
         // player1 owns its PlayerNFT, so it clears the owner guard and reaches the

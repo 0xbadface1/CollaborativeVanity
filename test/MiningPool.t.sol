@@ -817,16 +817,24 @@ contract MiningPoolTest is Test {
     }
 
     function test_getInitCodeHash_matchesManualComputation() public view {
+        // getInitCodeHash now returns the keccak256 of the EIP-1167 clone init code:
+        // a ~45-byte proxy stub pointing at currencyImpl, plus the committed params as
+        // immutable args. We rebuild that exact byte layout here (matching OpenZeppelin
+        // Clones._cloneCodeWithImmutableArgs, which is private) and compare.
         uint256 playerId = uint256(uint160(player1));
         bytes32 dayHash = pool.dayHashes(0);
-        bytes32 expected = keccak256(
-            abi.encodePacked(
-                type(CurrencyToken).creationCode,
-                abi.encode(playerId, uint256(0), uint256(pool.MIN_SHARE_WORK()), uint256(0), dayHash)
-            )
+        bytes memory args = abi.encode(playerId, uint256(0), uint256(pool.MIN_SHARE_WORK()), uint256(0), dayHash);
+        bytes memory cloneInitCode = abi.encodePacked(
+            hex"61",
+            uint16(args.length + 0x2d),
+            hex"3d81600a3d39f3363d3d373d3d3d363d73",
+            address(pool.currencyImpl()),
+            hex"5af43d82803e903d91602b57fd5bf3",
+            args
         );
+        bytes32 expected = keccak256(cloneInitCode);
         bytes32 actual = pool.getInitCodeHash(player1, 0, pool.MIN_SHARE_WORK(), 0, dayHash);
-        assertEq(actual, expected, "Should match manual computation");
+        assertEq(actual, expected, "Should match manual clone init code computation");
     }
 
     // =========================================================================

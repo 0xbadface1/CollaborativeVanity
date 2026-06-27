@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {CurrencyToken} from "./CurrencyToken.sol";
 import {PlayerNFT} from "./PlayerNFT.sol";
 import {CurrencyNFT} from "./CurrencyNFT.sol";
@@ -30,14 +31,21 @@ import {CurrencyNFT} from "./CurrencyNFT.sol";
 ///   Where:
 ///     - factory = this contract's address
 ///     - salt = free search variable (bytes32, iterated rapidly off-chain)
-///     - initCode = token bytecode + abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
+///     - initCode = EIP-1167 clone of currencyImpl + abi.encode(playerId, dayNumber,
+///                  targetWork, counter, dayHash) as the clone's immutable args
 ///     - counter = share submission index (strictly increasing, committed in initCode)
 ///     - dayHash = on-chain daily randomness (prevents pre-computing shares for future days)
 ///
+///   Each vanity address is a ~45-byte minimal-proxy clone of a single shared
+///   CurrencyToken implementation (currencyImpl), so CREATE2 hashes ~205 bytes of init
+///   code instead of the full ~4.7KB token — making the per-share address computation
+///   ~24x cheaper. The committed params are the clone's immutable args, so the address
+///   still binds to them cryptographically.
+///
 /// PRE-COMMITTED WORK (anti-Sybil):
 ///   Each player declares a target work BEFORE computing. This target is
-///   baked into the hash (via constructor params in initCode). You can't retroactively
-///   lower your claim — preventing cherry-picking of lucky results.
+///   baked into the hash (as the clone's immutable args in initCode). You can't
+///   retroactively lower your claim — preventing cherry-picking of lucky results.
 ///
 ///   Every share earns the pool average as a participation credit; a "valid" share
 ///   (actual work >= target) earns its target work on top. The combined credit is
@@ -140,6 +148,12 @@ contract MiningPool {
     ///         Minted when a player registers a vanity address discovery.
     CurrencyNFT public immutable currencyNFT;
 
+    /// @notice The shared CurrencyToken implementation. Deployed once by this
+    ///         contract's constructor; every vanity address is a minimal-proxy clone
+    ///         of it (EIP-1167 with immutable args). Hashing the ~205-byte clone init
+    ///         code on each share is ~24x cheaper than hashing the full token bytecode.
+    CurrencyToken public immutable currencyImpl;
+
     // =========================================================================
     //                              EVENTS
     // =========================================================================
@@ -207,6 +221,11 @@ contract MiningPool {
         // Deploy NFT contracts — they store address(this) as their authorized minter
         playerNFT = new PlayerNFT();
         currencyNFT = new CurrencyNFT();
+
+        // Deploy the shared CurrencyToken implementation. Each vanity address will be a
+        // minimal-proxy clone of this, delegatecalling in. Passing address(this) makes
+        // this pool the only authorized initializer of every clone's distribution.
+        currencyImpl = new CurrencyToken(address(this));
 
         // Publish day 0's hash immediately
         bytes32 day0Hash = keccak256(
@@ -287,23 +306,19 @@ contract MiningPool {
             revert CounterNotIncreasing();
         }
 
-        // --- Compute the CREATE2 hash on-chain ---
-        // initCodeHash includes the counter (committed per submission) and dayHash
-        // (on-chain randomness preventing pre-computation for future days).
+        // --- Compute the CREATE2 (clone) address on-chain ---
+        // The committed params are the clone's immutable args, so they live in the init
+        // code: the counter (committed per submission) and dayHash (on-chain randomness
+        // preventing pre-computation for future days) bind the address to this share.
         // salt is the free search variable the player iterated over.
+        // predictDeterministicAddressWithImmutableArgs hashes only the ~205-byte clone
+        // init code (not the full token bytecode) — this is the gas win on the hot path.
         bytes32 dayHash = dayHashes[dayNumber];
-        bytes32 initCodeHash = keccak256(
-            abi.encodePacked(
-                type(CurrencyToken).creationCode, abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
-            )
-        );
+        bytes memory args = abi.encode(playerId, dayNumber, targetWork, counter, dayHash);
+        address vanityAddress = Clones.predictDeterministicAddressWithImmutableArgs(address(currencyImpl), args, salt);
 
-        bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCodeHash));
-
-        // The CREATE2 address is the low 20 bytes of the hash. Work is scored on the
-        // address (the canonical on-chain object), not the full hash. Lower addresses
+        // Work is scored on the address (the canonical on-chain object). Lower addresses
         // have higher work.
-        address vanityAddress = address(uint160(uint256(create2Hash)));
         uint256 actualWork = addressToWork(vanityAddress);
 
         // Must meet minimum work to prevent spam
@@ -409,7 +424,7 @@ contract MiningPool {
         return (block.timestamp - dayZeroTimestamp) / 1 days;
     }
 
-    /// @notice Compute the initCodeHash for off-chain mining.
+    /// @notice Compute the clone initCodeHash for off-chain mining.
     ///         The initCodeHash is fixed for a given (player, day, target work, counter, dayHash).
     ///         Players compute this once per counter, then iterate over salt values:
     ///           initCodeHash = getInitCodeHash(me, day, targetWork, counter, dayHash)
@@ -417,26 +432,53 @@ contract MiningPool {
     ///             hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
     ///             if addressToWork(address(uint160(uint256(hash)))) >= targetWork: submit(counter, salt)
     ///
+    ///         This is the keccak256 of the EIP-1167 clone init code (a ~45-byte proxy
+    ///         pointing at currencyImpl, plus the committed params as immutable args), NOT
+    ///         the full CurrencyToken creation code. Miners therefore hash only ~205 bytes
+    ///         per salt iteration. On-chain, submitShare/registerCurrency/computeVanityAddress
+    ///         use OpenZeppelin's Clones predictor directly; this helper exists for off-chain
+    ///         clients (and tests) that want the raw initCodeHash.
+    ///
     ///         The dayHash parameter is the on-chain daily randomness from dayHashes[dayNumber].
     ///         It prevents players from pre-computing shares for future days, since the
     ///         dayHash is unknowable until getCurrentDayHash() or the first submission triggers its publication.
-    ///         Callers must look up the dayHash themselves (this function stays pure).
+    ///         Callers must look up the dayHash themselves.
     ///
+    /// @dev `view` (not `pure`) because it reads the `currencyImpl` immutable — the clone
+    ///      init code embeds the implementation address.
     /// @param player The player's wallet address
     /// @param dayNumber The day number being mined
     /// @param targetWork The expected-work target
     /// @param counter The share submission index (committed in initCode)
     /// @param dayHash The on-chain daily randomness for the given day
-    /// @return The initCodeHash to use in CREATE2 hash computation
+    /// @return The clone initCodeHash to use in CREATE2 hash computation
     function getInitCodeHash(address player, uint256 dayNumber, uint256 targetWork, uint256 counter, bytes32 dayHash)
         public
-        pure
+        view
         returns (bytes32)
     {
         uint256 playerId = uint256(uint160(player));
+        bytes memory args = abi.encode(playerId, dayNumber, targetWork, counter, dayHash);
+        return _cloneInitCodeHash(args);
+    }
+
+    /// @notice Hash the EIP-1167 clone init code (proxy stub + immutable args).
+    /// @dev Mirrors OpenZeppelin Clones._cloneCodeWithImmutableArgs, which is `private`
+    ///      and so cannot be called directly. The 45-byte template is consensus-frozen
+    ///      by every clone already deployed, so replicating it here is safe. Only used by
+    ///      the off-chain helper getInitCodeHash — NOT on the submitShare hot path, which
+    ///      uses Clones.predictDeterministicAddressWithImmutableArgs.
+    /// @param args The abi.encode'd committed params appended to the clone
+    /// @return The keccak256 of the full clone init code
+    function _cloneInitCodeHash(bytes memory args) internal view returns (bytes32) {
         return keccak256(
             abi.encodePacked(
-                type(CurrencyToken).creationCode, abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
+                hex"61",
+                uint16(args.length + 0x2d),
+                hex"3d81600a3d39f3363d3d373d3d3d363d73",
+                address(currencyImpl),
+                hex"5af43d82803e903d91602b57fd5bf3",
+                args
             )
         );
     }
@@ -520,17 +562,10 @@ contract MiningPool {
         uint256 playerId = uint256(uint160(player));
         bytes32 dayHash = dayHashes[dayNumber];
 
-        // Compute the CREATE2 address — counter and dayHash are in the initCode, salt is the CREATE2 salt
-        bytes32 initCodeHash = keccak256(
-            abi.encodePacked(
-                type(CurrencyToken).creationCode, abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
-            )
-        );
-
-        bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCodeHash));
-
-        // The CREATE2 address is the last 20 bytes of the hash
-        vanityAddress = address(uint160(uint256(create2Hash)));
+        // Compute the clone address — committed params are the clone's immutable args (in
+        // the init code), salt is the CREATE2 salt. Must match what deployCurrency deploys.
+        bytes memory args = abi.encode(playerId, dayNumber, targetWork, counter, dayHash);
+        vanityAddress = Clones.predictDeterministicAddressWithImmutableArgs(address(currencyImpl), args, salt);
         uint256 currencyId = uint256(uint160(vanityAddress));
 
         // Revert if already registered (ERC721 _mint would revert too, but clearer error)
@@ -590,19 +625,22 @@ contract MiningPool {
         // recompute the CREATE2 hash from the discovery params.
         uint256 vanityWork = addressToWork(vanityAddress);
 
-        // Deploy via CREATE2 — Solidity's `new ... {salt: ...}` compiles to CREATE2.
-        // The resulting address MUST match vanityAddress because we use the same
-        // factory (this), salt, and initCode (CurrencyToken bytecode + constructor args).
-        // The counter and dayHash are constructor params (in initCode), salt is the CREATE2 salt.
-        token = new CurrencyToken{salt: disc.salt}(
-            disc.playerId, disc.dayNumber, disc.targetWork, disc.counter, disc.dayHash
-        );
+        // Deploy a minimal-proxy clone of currencyImpl at the vanity address via CREATE2.
+        // The committed params are the clone's immutable args (in the init code), salt is
+        // the CREATE2 salt. The resulting address MUST match vanityAddress because the
+        // factory (this), salt, and init code are identical to what registerCurrency
+        // predicted. A clone has no constructor, so distribution state is set explicitly
+        // by initializeDistribution below.
+        bytes memory args =
+            abi.encode(disc.playerId, disc.dayNumber, disc.targetWork, disc.counter, disc.dayHash);
+        address clone = Clones.cloneDeterministicWithImmutableArgs(address(currencyImpl), args, disc.salt);
+        token = CurrencyToken(clone);
 
         // Sanity check: deployed address must match the registered vanity address.
         // Use a descriptive revert rather than assert() — assert signals an invariant
         // panic and consumes ALL remaining gas, which is wasteful for what is really a
         // (practically unreachable) input/state mismatch.
-        if (address(token) != vanityAddress) revert DeployedAddressMismatch(vanityAddress, address(token));
+        if (clone != vanityAddress) revert DeployedAddressMismatch(vanityAddress, clone);
 
         token.initializeDistribution(totalSupply);
 
@@ -633,9 +671,9 @@ contract MiningPool {
         uint256 targetWork,
         bytes32 dayHash
     ) external view returns (address) {
-        bytes32 initCodeHash = getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
-        bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCodeHash));
-        return address(uint160(uint256(create2Hash)));
+        uint256 playerId = uint256(uint160(player));
+        bytes memory args = abi.encode(playerId, dayNumber, targetWork, counter, dayHash);
+        return Clones.predictDeterministicAddressWithImmutableArgs(address(currencyImpl), args, salt);
     }
 
     // =========================================================================

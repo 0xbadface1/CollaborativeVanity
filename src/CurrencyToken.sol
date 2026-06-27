@@ -3,11 +3,12 @@ pragma solidity ^0.8.28;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 /// @notice Minimal interface CurrencyToken uses to read historical scores from MiningPool.
 /// @dev Kept in this file instead of importing MiningPool to avoid a circular dependency:
-///      MiningPool imports CurrencyToken for CREATE2 bytecode, while CurrencyToken only
-///      needs this small read-only surface at claim time.
+///      MiningPool imports CurrencyToken for the clone implementation, while CurrencyToken
+///      only needs this small read-only surface at claim time.
 interface IMiningPool {
     function getPlayerScoreAt(uint256 playerId, uint256 day) external view returns (uint256);
     function getPoolScoreAt(uint256 day) external view returns (uint256);
@@ -22,66 +23,65 @@ interface IPlayerNFT {
 }
 
 /// @title CurrencyToken
-/// @notice ERC-20 meme currency deployed at a vanity CREATE2 address.
+/// @notice ERC-20 meme currency *implementation* behind every vanity CREATE2 address.
 ///
-/// WHY THESE SPECIFIC CONSTRUCTOR PARAMS:
+/// CLONE ARCHITECTURE (why this is an implementation, not a directly-deployed token):
+///   Hashing the full ~4.7 KB token creation code on every `submitShare` was the dominant
+///   on-chain cost of the mining hot path. To shrink it, each vanity address is now a
+///   ~45-byte EIP-1167 minimal proxy (a "clone") that delegatecalls into ONE shared
+///   instance of this contract (`MiningPool.currencyImpl`). CREATE2 then hashes only the
+///   ~205-byte clone init code, cutting the per-share address computation ~24x.
+///
+///   Consequences of the clone model (read carefully — these drive the layout below):
+///     - NO CONSTRUCTOR RUNS ON A CLONE. The constructor here runs exactly once, on the
+///       shared implementation. Clones are born with empty storage and uninitialized.
+///     - IMMUTABLES ARE CODE, SO THEY SURVIVE DELEGATECALL. `miningPool` is baked into the
+///       implementation's runtime bytecode; a clone delegatecalling in reads the impl's
+///       value. Safe to share across all clones (it's the same pool for everyone).
+///     - PER-INSTANCE PARAMS LIVE IN THE PROXY, NOT IN IMMUTABLES. The committed params
+///       (playerId, dayNumber, targetWork, counter, dayHash) differ per clone, so they
+///       CANNOT be constructor immutables (those would bake into the shared impl). They are
+///       appended to the clone as immutable args and read at runtime via
+///       `Clones.fetchCloneArgs(address(this))` — see {_params}.
+///     - NAME/SYMBOL CAN'T BE STORAGE. OZ ERC20 stores name/symbol in storage set by its
+///       constructor; on a clone that storage is empty. We therefore override {name} and
+///       {symbol} as pure constants (code, not storage), shared by all clones.
+///     - ALL OTHER STATE IS CLONE STORAGE. ERC-20 balances/allowances/totalSupply plus the
+///       distribution bookkeeping below live at the vanity address's storage, written by
+///       {initializeDistribution} and {claim}. Token events are attributed to the vanity
+///       address, as desired.
+///
+/// WHY THESE SPECIFIC COMMITTED PARAMS:
 ///   The CREATE2 address is determined by:
-///     address = keccak256(0xff ‖ factory ‖ salt ‖ keccak256(initCode))[12:]
-///
-///   initCode = this contract's creation bytecode + abi.encode(constructor args)
-///
-///   So the constructor params directly affect the vanity address.
-///   We include exactly the params that define the mining context:
-///     - playerId: who discovered this address (also prevents replay across players)
-///     - dayNumber: when it was discovered (anchors to a time window)
+///     address = keccak256(0xff ‖ factory ‖ salt ‖ keccak256(cloneInitCode))[12:]
+///   The committed params are the clone's immutable args, so they are part of the init code
+///   and the vanity address binds to them cryptographically (anti-Sybil intact):
+///     - playerId:   who discovered this address (also prevents replay across players)
+///     - dayNumber:  when it was discovered (anchors to a score-snapshot window)
 ///     - targetWork: the expected-work bet (prevents retroactive target changes)
-///     - counter: the share submission index (strictly increasing per player per day)
-///     - dayHash: on-chain daily randomness (prevents pre-computing shares for future days)
-///
+///     - counter:    the share submission index (strictly increasing per player per day)
+///     - dayHash:    on-chain daily randomness (prevents pre-computing future-day shares)
 ///   The salt (CREATE2 salt) is the FREE search variable — iterated rapidly off-chain.
-///   The counter is COMMITTED in the initCode — changing it changes the address space.
-///
-///   totalSupply is NOT a constructor param — it's chosen at deployment time by the
-///   CurrencyNFT holder via the mint function. This means players don't need to
-///   agree on supply during the search phase.
+///   totalSupply is NOT committed — it's chosen at deployment time by the CurrencyNFT holder,
+///   so players don't need to agree on supply during the search phase.
 ///
 /// DEPLOYMENT FLOW:
 ///   1. Player discovers a vanity address during mining (off-chain search)
 ///   2. Player registers it as a CurrencyNFT (on-chain)
-///   3. CurrencyNFT holder calls deploy() on MiningPool, which uses CREATE2
+///   3. CurrencyNFT holder calls deployCurrency() on MiningPool, which clones this impl
+///      to the vanity address via CREATE2
 ///   4. MiningPool initializes the chosen distribution supply
 ///   5. PlayerNFT owners call claim() to mint their share
-///   5. Supply split: 1% to discoverer, 99% proportional to all players' scores
+///      Supply split: 1% to discoverer, 99% proportional to all players' scores
 contract CurrencyToken is ERC20 {
-    /// @notice The player who discovered this vanity address.
-    ///         Stored as uint256(uint160(playerWalletAddress)).
-    uint256 public immutable playerId;
-
-    /// @notice The day number when this currency was discovered.
-    ///         Used to look up historical player/pool scores for distribution.
-    uint256 public immutable dayNumber;
-
-    /// @notice The target work the discoverer was mining at.
-    ///         Baked into the hash to prevent retroactive target changes.
-    uint256 public immutable targetWork;
-
-    /// @notice The share submission counter. Part of the initCode — changing it
-    ///         changes the address space being searched. Strictly increasing per
-    ///         player per day, enforced by MiningPool.
-    uint256 public immutable counter;
-
-    /// @notice The day hash — on-chain randomness anchoring this share to a specific day.
-    ///         Derived from block.prevrandao and published by MiningPool on the first
-    ///         submission of each new day. Prevents players from pre-computing shares
-    ///         for future days, since the dayHash is unknowable until that day begins.
-    bytes32 public immutable dayHash;
-
-    /// @notice The MiningPool that deployed this token (msg.sender during CREATE2).
+    /// @notice The MiningPool that deployed this implementation (msg.sender during the
+    ///         impl's construction). An impl-level immutable: baked into the runtime
+    ///         bytecode, so every clone reads the same pool through delegatecall.
     ///         Only the pool can initialize the distribution.
     address public immutable miningPool;
 
     /// @notice Total token supply reserved for player distribution.
-    ///         Set exactly once by MiningPool immediately after CREATE2 deployment.
+    ///         Set exactly once by MiningPool immediately after the clone is deployed.
     uint256 public distributionSupply;
 
     /// @notice Historical day used for score lookups.
@@ -118,27 +118,69 @@ contract CurrencyToken is ERC20 {
         uint256 discovererBonus
     );
 
-    /// @param _playerId The discovering player's ID
-    /// @param _dayNumber The discovery day number
-    /// @param _targetWork The expected-work target used during mining
-    /// @param _counter The share counter (part of initCode, affects address space)
-    /// @param _dayHash The on-chain daily randomness (prevents pre-computation for future days)
-    constructor(uint256 _playerId, uint256 _dayNumber, uint256 _targetWork, uint256 _counter, bytes32 _dayHash)
-        ERC20("Vanity Currency", "VANITY")
-    {
-        playerId = _playerId;
-        dayNumber = _dayNumber;
-        targetWork = _targetWork;
-        counter = _counter;
-        dayHash = _dayHash;
-        miningPool = msg.sender;
+    /// @notice Construct the shared implementation. Runs ONCE (on the impl), never on a clone.
+    /// @param _miningPool The MiningPool authorized to initialize distributions on clones.
+    ///        Passed explicitly (rather than read as msg.sender) for clarity; MiningPool
+    ///        deploys this impl in its own constructor and passes address(this).
+    /// @dev The ERC20 name/symbol args are empty placeholders — {name} and {symbol} are
+    ///      overridden as pure constants because clone storage is empty (see contract docs).
+    constructor(address _miningPool) ERC20("", "") {
+        miningPool = _miningPool;
     }
 
-    /// @notice Initialize token distribution after CREATE2 deployment.
+    /// @notice The currency name. Shared by all clones (pure constant, not storage).
+    function name() public pure override returns (string memory) {
+        return "Vanity Currency";
+    }
+
+    /// @notice The currency symbol. Shared by all clones (pure constant, not storage).
+    function symbol() public pure override returns (string memory) {
+        return "VANITY";
+    }
+
+    /// @notice Decode this clone's committed params from its EIP-1167 immutable args.
+    /// @dev Reads the args appended to the proxy via `Clones.fetchCloneArgs`. Only
+    ///      meaningful when called on a clone; behavior on the bare implementation is
+    ///      undefined (the impl is never used as a token).
+    function _params()
+        internal
+        view
+        returns (uint256 playerId_, uint256 dayNumber_, uint256 targetWork_, uint256 counter_, bytes32 dayHash_)
+    {
+        return abi.decode(Clones.fetchCloneArgs(address(this)), (uint256, uint256, uint256, uint256, bytes32));
+    }
+
+    /// @notice The player who discovered this vanity address (uint256(uint160(wallet))).
+    function playerId() public view returns (uint256 value) {
+        (value,,,,) = _params();
+    }
+
+    /// @notice The day number this currency was discovered (score-snapshot anchor).
+    function dayNumber() public view returns (uint256 value) {
+        (, value,,,) = _params();
+    }
+
+    /// @notice The expected-work target committed during mining.
+    function targetWork() public view returns (uint256 value) {
+        (,, value,,) = _params();
+    }
+
+    /// @notice The share submission counter committed in the clone init code.
+    function counter() public view returns (uint256 value) {
+        (,,, value,) = _params();
+    }
+
+    /// @notice The on-chain daily randomness anchoring this share to a specific day.
+    function dayHash() public view returns (bytes32 value) {
+        (,,,, value) = _params();
+    }
+
+    /// @notice Initialize token distribution after the clone is deployed.
     ///
     ///         MiningPool calls this exactly once from deployCurrency(), passing the
-    ///         total supply chosen by the CurrencyNFT owner. The snapshot day is
-    ///         derived from the immutable discovery day:
+    ///         total supply chosen by the CurrencyNFT owner. Because a clone has no
+    ///         constructor, this explicit call is what populates the clone's storage.
+    ///         The snapshot day is derived from the committed discovery day:
     ///
     ///           snapshotDay = dayNumber > 0 ? dayNumber - 1 : 0
     ///
@@ -150,7 +192,8 @@ contract CurrencyToken is ERC20 {
         if (msg.sender != miningPool) revert OnlyMiningPool();
         if (initialized) revert DistributionAlreadyInitialized();
 
-        uint256 snapshot = dayNumber > 0 ? dayNumber - 1 : 0;
+        (, uint256 day,,,) = _params();
+        uint256 snapshot = day > 0 ? day - 1 : 0;
         uint256 poolScore = IMiningPool(miningPool).getPoolScoreAt(snapshot);
         if (poolScore == 0) revert DistributionHasNoPoolScore();
 
@@ -198,7 +241,8 @@ contract CurrencyToken is ERC20 {
         assert(playerScore <= poolScoreAtSnapshot);
         uint256 poolAllocation = Math.mulDiv(distributionSupply, 99, 100);
         uint256 proportionalAmount = Math.mulDiv(poolAllocation, playerScore, poolScoreAtSnapshot);
-        uint256 discovererBonus = claimPlayerId == playerId ? distributionSupply / 100 : 0;
+        (uint256 discovererId,,,,) = _params();
+        uint256 discovererBonus = claimPlayerId == discovererId ? distributionSupply / 100 : 0;
         amount = proportionalAmount + discovererBonus;
 
         if (amount == 0) revert NothingToClaim(claimPlayerId);
