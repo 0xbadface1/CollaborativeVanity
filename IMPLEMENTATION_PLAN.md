@@ -98,9 +98,9 @@ The counter defines WHICH address space to search. The salt searches WITHIN that
 1. Pick `targetWork`, `dayNumber`, `counter` (must be > last submitted)
 2. Look up `dayHash = dayHashes(dayNumber)` — must be non-zero (day must exist)
 3. Compute `initCodeHash = getInitCodeHash(me, day, work, counter, dayHash)` — fixed per counter
-4. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`
-5. If `hashToWork(hash) >= targetWork`: submit `(counter, salt)` pair
-6. If you want that hash to become a coin: register its address as a currency
+4. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`; take the address `addr = address(uint160(uint256(hash)))`
+5. If `addressToWork(addr) >= targetWork`: submit `(counter, salt)` pair
+6. If you want that address to become a coin: register it as a currency
 
 The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is baked into MiningPool at compile time. No setter or external loading needed. Any change to CurrencyToken automatically updates all hash computations on recompile.
 
@@ -191,14 +191,14 @@ Lazy minted by MiningPool on first share submission (idempotent `mintIfNeeded`).
 
 ### Work Scoring
 
-`MiningPool.hashToWork(hash)` converts a CREATE2 hash into expected work. Lower hashes produce higher work:
+`MiningPool.addressToWork(addr)` converts a CREATE2 **address** (the low 160 bits of the hash) into expected work over a **2^160 domain**. Lower addresses produce higher work:
 
 ```solidity
-if (hash == bytes32(0)) return type(uint256).max;
-return type(uint256).max / uint256(hash);
+if (uint160(addr) == 0) return type(uint256).max;
+return uint256(type(uint160).max) / uint160(addr);
 ```
 
-The all-zero hash saturates to `uint256.max`, which is the largest representable work value.
+Work is scored on the address, not the full 32-byte hash, because the address is the canonical on-chain object: a low-valued address is simultaneously high work and a leading-zero vanity. The `type(uint160).max` numerator matches the 160-bit domain so the calibration is preserved (a typical address ≈ 2 work; 16 leading zero bits ≈ 2^16 work ≈ 65,536 expected hashes). The zero address saturates to `uint256.max` (unreachable in practice).
 
 ---
 

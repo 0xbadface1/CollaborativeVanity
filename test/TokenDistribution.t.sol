@@ -73,7 +73,7 @@ contract TokenDistributionTest is Test {
             bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), poolAddr, salt, initCodeHash));
             assembly { mstore(0x40, freeMemPtr) }
 
-            actualWork = pool.hashToWork(create2Hash);
+            actualWork = pool.addressToWork(address(uint160(uint256(create2Hash))));
             if (actualWork >= minWork) {
                 return (salt, actualWork);
             }
@@ -187,7 +187,7 @@ contract TokenDistributionTest is Test {
         bytes32 dayHash = pool.dayHashes(dayNumber);
         bytes32 initCodeHash = pool.getInitCodeHash(player, dayNumber, targetWork, counter, dayHash);
         bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(pool), salt, initCodeHash));
-        return pool.hashToWork(create2Hash);
+        return pool.addressToWork(address(uint160(uint256(create2Hash))));
     }
 
     /// @notice Mock MiningPool score read for directly deployed CurrencyToken tests.

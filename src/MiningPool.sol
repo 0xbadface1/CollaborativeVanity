@@ -241,7 +241,7 @@ contract MiningPool {
     ///   5. Search over salt values:
     ///      For each salt, compute:
     ///        hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
-    ///      Convert the hash to work with hashToWork().
+    ///      Take the low 20 bytes as the address and convert it to work with addressToWork().
     ///      If actualWork >= targetWork, submit that (counter, salt) pair.
     ///   6. The salt is freely chosen — no ordering constraint.
     ///      The counter must be strictly increasing (gaps OK).
@@ -300,8 +300,11 @@ contract MiningPool {
 
         bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCodeHash));
 
-        // Convert the hash to expected work. Lower hashes have higher work.
-        uint256 actualWork = hashToWork(create2Hash);
+        // The CREATE2 address is the low 20 bytes of the hash. Work is scored on the
+        // address (the canonical on-chain object), not the full hash. Lower addresses
+        // have higher work.
+        address vanityAddress = address(uint160(uint256(create2Hash)));
+        uint256 actualWork = addressToWork(vanityAddress);
 
         // Must meet minimum work to prevent spam
         if (actualWork < MIN_SHARE_WORK) revert BelowMinWork();
@@ -412,7 +415,7 @@ contract MiningPool {
     ///           initCodeHash = getInitCodeHash(me, day, targetWork, counter, dayHash)
     ///           for salt in range:
     ///             hash = keccak256(0xff ‖ poolAddress ‖ salt ‖ initCodeHash)
-    ///             if hashToWork(hash) >= targetWork: submit(counter, salt)
+    ///             if addressToWork(address(uint160(uint256(hash)))) >= targetWork: submit(counter, salt)
     ///
     ///         The dayHash parameter is the on-chain daily randomness from dayHashes[dayNumber].
     ///         It prevents players from pre-computing shares for future days, since the
@@ -454,15 +457,29 @@ contract MiningPool {
         _averageWork = totalShareCount > 0 ? totalIntegratedWork / totalShareCount : 0;
     }
 
-    /// @notice Convert a CREATE2 hash into expected work.
-    /// @dev Mirrors the Bitcoin-style intuition: lower hash value means more
-    ///      expected hashes were needed. The all-zero hash saturates to uint256 max.
-    /// @param hash The hash to score
-    /// @return work Expected work represented by the hash
-    function hashToWork(bytes32 hash) public pure returns (uint256 work) {
-        uint256 hashValue = uint256(hash);
-        if (hashValue == 0) return type(uint256).max;
-        return type(uint256).max / hashValue;
+    /// @notice Convert a CREATE2 *address* into expected work over a 2^160 domain.
+    /// @dev Mirrors the Bitcoin-style intuition: a lower address value means more
+    ///      expected hashes were needed. Work is scored on the 20-byte address (the
+    ///      low 160 bits of the CREATE2 hash) rather than the full 32-byte hash,
+    ///      because the address is the canonical on-chain object and a low-valued
+    ///      address is simultaneously high work AND a leading-zero vanity — unifying
+    ///      share work with vanity quality.
+    ///
+    ///      The numerator is type(uint160).max (NOT type(uint256).max) so that the
+    ///      domain matches a 160-bit address: a typical address scores ~2 work, and
+    ///      an address with 16 leading zero bits scores ~2^16 work (≈ 65,536 expected
+    ///      hashes), preserving the MIN_SHARE_WORK calibration. Using the uint256
+    ///      numerator here would make every address clear MIN_SHARE_WORK for free.
+    ///
+    ///      The zero address saturates to type(uint256).max. This branch is
+    ///      unreachable in practice — finding a salt that yields address(0) is itself
+    ///      2^160 work — but it keeps the function total.
+    /// @param addr The CREATE2 address to score
+    /// @return work Expected work represented by the address
+    function addressToWork(address addr) public pure returns (uint256 work) {
+        uint256 addrValue = uint160(addr);
+        if (addrValue == 0) return type(uint256).max;
+        return uint256(type(uint160).max) / addrValue;
     }
 
     // =========================================================================
@@ -568,11 +585,10 @@ contract MiningPool {
         if (currencyNFT.ownerOf(currencyId) != msg.sender) revert NotCurrencyOwner();
         if (totalSupply == 0) revert ZeroTotalSupply();
 
-        bytes32 initCodeHash = getInitCodeHash(
-            address(uint160(disc.playerId)), disc.dayNumber, disc.targetWork, disc.counter, disc.dayHash
-        );
-        bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), disc.salt, initCodeHash));
-        uint256 vanityWork = hashToWork(create2Hash);
+        // Work is scored on the address itself, and vanityAddress is verified below to
+        // equal the deployed token address, so we can score it directly — no need to
+        // recompute the CREATE2 hash from the discovery params.
+        uint256 vanityWork = addressToWork(vanityAddress);
 
         // Deploy via CREATE2 — Solidity's `new ... {salt: ...}` compiles to CREATE2.
         // The resulting address MUST match vanityAddress because we use the same

@@ -2,7 +2,7 @@
 
 First implementation of the collaborative vanity address mining system from the **"Capturing and Distributing Cryptographic Luck"** paper (Section 4).
 
-Players submit proof-of-work shares (low CREATE2 hashes scored as expected work) to an on-chain MiningPool on Base (Ethereum L2). Every hash is also a potential currency: anyone can register the resulting CREATE2 address and deploy an ERC-20 there, taking a 1% discoverer bonus while sharing the rest with contributors according to the protocol's snapshot rules.
+Players submit proof-of-work shares (low-valued CREATE2 addresses scored as expected work) to an on-chain MiningPool on Base (Ethereum L2). Every hash is also a potential currency: anyone can register the resulting CREATE2 address and deploy an ERC-20 there, taking a 1% discoverer bonus while sharing the rest with contributors according to the protocol's snapshot rules.
 
 **Author:** Tristan Badface (0xbadface.eth)
 
@@ -11,8 +11,10 @@ Players submit proof-of-work shares (low CREATE2 hashes scored as expected work)
 ## How It Works
 
 Every hash attempt simultaneously produces two things:
-1. **Expected work** — proof of work measured from the full hash value
+1. **Expected work** — proof of work measured from the resulting 20-byte address (a low-valued address took more attempts on average)
 2. **A currency address** — maybe visually interesting, maybe not; the contract does not judge
+
+Because work is scored on the address itself, a low-valued address is *both* high work and a leading-zero vanity — the two searches are one.
 
 The share hash IS the CREATE2 address computation:
 

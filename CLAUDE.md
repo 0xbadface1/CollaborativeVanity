@@ -44,14 +44,16 @@ Author: **Tristan Badface** (0xbadface.eth)
 
 ### Work Scoring
 
-Shares are scored by **expected work**, not leading-zero bits. `MiningPool.hashToWork(hash)` converts a CREATE2 hash into a continuous work value:
+Shares are scored by **expected work**, not leading-zero bits. Work is scored on the **20-byte CREATE2 address** (the low 160 bits of the hash), not the full 32-byte hash. `MiningPool.addressToWork(addr)` converts an address into a continuous work value over a **2^160 domain**:
 
 ```solidity
-if (hash == bytes32(0)) return type(uint256).max;
-return type(uint256).max / uint256(hash);   // lower hash → more expected hashes → more work
+if (uint160(addr) == 0) return type(uint256).max;
+return uint256(type(uint160).max) / uint160(addr);   // lower address → more expected hashes → more work
 ```
 
-This mirrors the Bitcoin-style intuition (a lower hash needed more attempts on average) and is a smoother measure of effort than counting discrete zero bits. The all-zero hash saturates to `uint256.max`. There is no separate library — work scoring is a `pure` function on MiningPool. (The former `libraries/LeadingZeros.sol` leading-zero counter was removed in this switch.)
+Scoring the address (not the full hash) is deliberate: the address is the canonical on-chain object, and a low-valued address is *simultaneously* high work **and** a leading-zero vanity — unifying share work with vanity quality. The numerator is `type(uint160).max` (not `uint256.max`) so the domain matches a 160-bit address: a typical address scores ~2 work, and an address with 16 leading zero bits scores ~2^16 work (≈ 65,536 expected hashes), preserving the `MIN_SHARE_WORK` calibration. Using a `uint256` numerator here would make every address clear `MIN_SHARE_WORK` for free.
+
+This mirrors the Bitcoin-style intuition (a lower value needed more attempts on average) and is a smoother measure of effort than counting discrete zero bits. The zero address saturates to `uint256.max` (unreachable — yielding `address(0)` is itself 2^160 work). There is no separate library — work scoring is a `pure` function on MiningPool. (The former `libraries/LeadingZeros.sol` leading-zero counter was removed in this switch.)
 
 ### CREATE2 Hash Construction
 
@@ -203,6 +205,8 @@ These were discussed and decided. Context preserved here so future sessions don'
 9. **Caller must be the player.** `submitShare` and `registerCurrency` take the player address as a parameter and require `msg.sender == player`. The player is also committed in the CREATE2 hash, so the share/discovery is cryptographically bound to that identity. These are self-only operations — a caller can only mine and register under their own identity. CurrencyNFTs are still minted to the current PlayerNFT owner (not necessarily the original player address), so transferred PlayerNFTs carry discovery rights.
 
 10. **CurrencyNFT minted to PlayerNFT owner.** On `registerCurrency`, the CurrencyNFT goes to whoever currently owns the PlayerNFT for that playerId. If the PlayerNFT doesn't exist yet, it's lazy-minted first. This ensures that if a player sells their PlayerNFT (their "mining account"), all future discoveries associated with that playerId flow to the new owner.
+
+11. **Work scored on the 20-byte address (2^160 domain), not the full 32-byte hash.** `addressToWork(address) = type(uint160).max / uint160(addr)` (address 0 saturates to `uint256.max`). Originally work was `hashToWork(bytes32) = uint256.max / uint256(hash)` on the full hash, but the upper 12 bytes are discarded when forming the address, so a leading-zero *address* (the canonical vanity) did not score as high work. Scoring the address unifies share work with vanity quality and lets the planned clone/proxy refactor predict the address with OpenZeppelin's `predictDeterministicAddressWithImmutableArgs` (which returns only the address). The numerator was redomained from 2^256 → 2^160 so the calibration is preserved: same Pareto law for accepted work, so `MIN_SHARE_WORK` and `BOOTSTRAP_*` need no recalibration. `totalIntegratedWork` stays `uint256` with strictly more headroom (per-share work now bounded by ~2^160 instead of ~2^256).
 
 ---
 

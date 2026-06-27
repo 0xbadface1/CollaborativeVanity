@@ -116,7 +116,7 @@ contract MiningPoolTest is Test {
             // Reset free memory pointer to prevent memory growth
             assembly { mstore(0x40, freeMemPtr) }
 
-            actualWork = pool.hashToWork(create2Hash);
+            actualWork = pool.addressToWork(address(uint160(uint256(create2Hash))));
             if (actualWork >= minWork) {
                 return (salt, actualWork);
             }
@@ -142,7 +142,7 @@ contract MiningPoolTest is Test {
             bytes32 create2Hash = keccak256(abi.encodePacked(bytes1(0xff), poolAddr, salt, initCodeHash));
             assembly { mstore(0x40, freeMemPtr) }
 
-            if (pool.hashToWork(create2Hash) < minWork) {
+            if (pool.addressToWork(address(uint160(uint256(create2Hash)))) < minWork) {
                 return salt;
             }
         }
