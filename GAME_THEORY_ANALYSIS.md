@@ -61,7 +61,7 @@ One entity creates 1000 wallets, tries different target difficulties from each, 
 ### Why It Doesn't Work
 The wallet address (= playerId) is baked into the initCode, which feeds the CREATE2 address:
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
+initCodeHash = keccak256(EIP1167_clone(currencyImpl) ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
@@ -104,11 +104,11 @@ Player A broadcasts a `registerCurrency` transaction. Player B sees it in the me
 ### Analysis
 The CREATE2 address depends on:
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
+initCodeHash = keccak256(EIP1167_clone(currencyImpl) ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
 
-**This is prevented by design.** The registering player's playerId (= wallet address) is baked into the initCode constructor params. A different player using the same salt and counter produces a completely different initCodeHash — and therefore a different address.
+**This is prevented by design.** The registering player's playerId (= wallet address) is baked into the initCode as a clone immutable arg. A different player using the same salt and counter produces a completely different initCodeHash — and therefore a different address.
 
 Note: `submitShare` and `registerCurrency` require `msg.sender == player`, so an attacker cannot register a discovery under someone else's identity in the first place. Even setting that aside, front-running is impossible — the registered address is cryptographically bound to the original player's address, so an attacker substituting their own address produces a different result. The CurrencyNFT is always minted to the current owner of the player's PlayerNFT.
 

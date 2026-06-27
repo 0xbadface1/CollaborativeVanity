@@ -19,7 +19,7 @@ Because work is scored on the address itself, a low-valued address is *both* hig
 The share hash IS the CREATE2 address computation:
 
 ```
-initCodeHash = keccak256(CurrencyToken.creationCode || abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
+initCodeHash = keccak256(EIP1167_clone(currencyImpl) || abi.encode(playerId, dayNumber, targetWork, counter, dayHash))
 address = keccak256(0xff || MiningPool || salt || initCodeHash)[12:]
 ```
 
@@ -32,7 +32,7 @@ When someone wants to turn a hash into a currency, they register it as a Currenc
 | Contract | Role |
 |---|---|
 | `MiningPool.sol` | Central contract. Share submission, scoring, day management, currency registration & deployment. |
-| `CurrencyToken.sol` | ERC-20 deployed at registered CREATE2 addresses. |
+| `CurrencyToken.sol` | ERC-20 implementation. Each vanity address is a minimal-proxy (EIP-1167) clone of it, deployed via CREATE2. |
 | `PlayerNFT.sol` | ERC-721 player identity. Lazy minted on first share. Transferable — sells your mining history. |
 | `CurrencyNFT.sol` | ERC-721 for registered currency addresses. Grants deployment rights + discoverer reward. |
 
@@ -53,7 +53,7 @@ forge test --gas-report  # with gas reporting
 
 **Phase 2 (Token Distribution)** — Complete. Mint logic, 1%/99% distribution, player claims.
 
-Current test suite: 88 tests passing.
+Current test suite: 97 tests passing.
 
 See `IMPLEMENTATION_PLAN.md` for full roadmap and `GAME_THEORY_ANALYSIS.md` for attack scenario analysis.
 

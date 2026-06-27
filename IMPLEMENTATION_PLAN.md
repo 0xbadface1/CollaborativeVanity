@@ -73,22 +73,23 @@ The share hash IS the CREATE2 address computation. Every hash attempt simultaneo
 ### Formula
 
 ```
-initCodeHash = keccak256(
-    CurrencyToken.creationCode ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
-)
+cloneInitCode = EIP-1167 proxy(currencyImpl) ‖ abi.encode(playerId, dayNumber, targetWork, counter, dayHash)
+initCodeHash  = keccak256(cloneInitCode)
 
 CREATE2 address = keccak256(0xff ‖ MiningPool ‖ salt ‖ initCodeHash)[12:]
 ```
+
+Each vanity address is a ~45-byte EIP-1167 minimal-proxy clone of a single shared `CurrencyToken` implementation (`currencyImpl`). The committed params are the clone's **immutable args**, so CREATE2 hashes ~205 bytes of init code instead of the full ~4.7KB token — see Phase 3 below.
 
 ### Roles of each variable
 
 | Variable | Where | Role | Constraint |
 |---|---|---|---|
-| `playerId` | initCode | Player identity (= wallet address) | Explicit parameter; must equal `msg.sender` |
-| `dayNumber` | initCode | Time anchor | Must have valid dayHash |
-| `targetWork` | initCode | Pre-committed work bet | Anti-Sybil: can't retroactively lower |
-| `counter` | initCode | Share submission index | Strictly increasing per player per day |
-| `dayHash` | initCode | On-chain daily randomness | Prevents pre-computing shares for future days |
+| `playerId` | initCode (clone immutable arg) | Player identity (= wallet address) | Explicit parameter; must equal `msg.sender` |
+| `dayNumber` | initCode (clone immutable arg) | Time anchor | Must have valid dayHash |
+| `targetWork` | initCode (clone immutable arg) | Pre-committed work bet | Anti-Sybil: can't retroactively lower |
+| `counter` | initCode (clone immutable arg) | Share submission index | Strictly increasing per player per day |
+| `dayHash` | initCode (clone immutable arg) | On-chain daily randomness | Prevents pre-computing shares for future days |
 | `salt` | CREATE2 salt | Free search variable | No constraint — iterated billions of times |
 
 The counter defines WHICH address space to search. The salt searches WITHIN that space. Changing the counter changes the initCodeHash, producing an entirely different 2^256-sized search space. The dayHash ensures shares can only be computed after a day's randomness is published.
@@ -97,12 +98,12 @@ The counter defines WHICH address space to search. The salt searches WITHIN that
 
 1. Pick `targetWork`, `dayNumber`, `counter` (must be > last submitted)
 2. Look up `dayHash = dayHashes(dayNumber)` — must be non-zero (day must exist)
-3. Compute `initCodeHash = getInitCodeHash(me, day, work, counter, dayHash)` — fixed per counter
+3. Compute `initCodeHash = getInitCodeHash(me, day, work, counter, dayHash)` — the clone init-code hash, fixed per counter
 4. Iterate salt: `hash = keccak256(0xff ‖ pool ‖ salt ‖ initCodeHash)`; take the address `addr = address(uint160(uint256(hash)))`
 5. If `addressToWork(addr) >= targetWork`: submit `(counter, salt)` pair
 6. If you want that address to become a coin: register it as a currency
 
-The initCodeHash is computed on-chain from `type(CurrencyToken).creationCode` — the token bytecode is baked into MiningPool at compile time. No setter or external loading needed. Any change to CurrencyToken automatically updates all hash computations on recompile.
+`getInitCodeHash` returns `keccak256` of the EIP-1167 clone init code (proxy stub for `currencyImpl` + the committed params as immutable args). `currencyImpl` is deployed once in MiningPool's constructor. Off-chain miners hash only ~205 bytes per salt iteration; on-chain, the contract derives addresses with OZ `Clones.predictDeterministicAddressWithImmutableArgs`. Any change to `CurrencyToken` updates `currencyImpl` (and thus every clone address) on recompile.
 
 ---
 
@@ -135,30 +136,30 @@ The heart of the system. Deploys PlayerNFT and CurrencyNFT in its constructor. P
 **Key functions:**
 - `submitShare(player, targetWork, dayNumber, counter, salt)` — core share submission (requires `msg.sender == player`)
 - `registerCurrency(player, counter, salt, dayNumber, targetWork)` → mints CurrencyNFT to current PlayerNFT owner
-- `deployCurrency(vanityAddress, totalSupply)` → CREATE2 deploys CurrencyToken, only by NFT owner
+- `deployCurrency(vanityAddress, totalSupply)` → CREATE2 deploys a CurrencyToken clone, only by NFT owner
 - `getPlayerScoreAt(playerId, day)` → checkpoint binary search
 - `getPoolScoreAt(day)` → pool-wide checkpoint binary search
-- `getInitCodeHash(player, day, work, counter, dayHash)` → for off-chain mining
+- `getInitCodeHash(player, day, work, counter, dayHash)` → clone init-code hash for off-chain mining (`view`)
 - `computeVanityAddress(player, counter, salt, day, work, dayHash)` → verify before registering
 - `getCurrentDayHash()` → publish current day's hash without submitting a share (resolves dayHash bootstrap)
 
 ### CurrencyToken (ERC-20)
 
-Deployed via CREATE2 at registered currency addresses.
+A single shared **implementation** (`currencyImpl`), deployed once in MiningPool's constructor. Each registered currency address is a ~45-byte EIP-1167 minimal-proxy clone of it, deployed via `Clones.cloneDeterministicWithImmutableArgs`.
 
-**Constructor params** (affect the CREATE2 address):
-- `playerId`, `dayNumber`, `targetWork`, `counter`, `dayHash`
+**Committed params** (clone immutable args — affect the CREATE2 address):
+- `playerId`, `dayNumber`, `targetWork`, `counter`, `dayHash` — read at runtime via `Clones.fetchCloneArgs(address(this))` (NOT constructor immutables, which would bake into the shared impl)
 
-**NOT in constructor** (chosen at deployment time):
+**NOT committed** (chosen at deployment time):
 - `totalSupply` — passed to `MiningPool.deployCurrency()` and stored by `initializeDistribution()`
 
 **Key properties:**
-- `miningPool` = msg.sender during CREATE2 (= MiningPool address)
-- Only MiningPool can call `initializeDistribution(totalSupply)`
+- `miningPool` = the impl-level immutable set when `currencyImpl` is deployed (= MiningPool); survives delegatecall, shared by all clones
+- A clone has no constructor — distribution state is set by the explicit `initializeDistribution(totalSupply)` call; only MiningPool may call it
 - Players claim through `claim(playerId)`; tokens mint to the current PlayerNFT owner
 - Distribution uses `snapshotDay = dayNumber > 0 ? dayNumber - 1 : 0`
 - Supply split: 1% discoverer bonus + 99% proportional by score at snapshot day
-- Hardcoded name/symbol for now ("Vanity Currency" / "VANITY")
+- `name`/`symbol` are `pure` constant overrides ("Vanity Currency" / "VANITY") — clone storage is empty, so OZ ERC20's storage-backed name/symbol can't be used
 
 ### CurrencyNFT (ERC-721)
 
@@ -206,7 +207,7 @@ Work is scored on the address, not the full 32-byte hash, because the address is
 
 ### Pre-Committed Work (Anti-Sybil)
 
-Target work is baked into initCode (constructor params). Can't retroactively lower.
+Target work is baked into initCode (clone immutable args). Can't retroactively lower.
 
 Every share earns the pool average as a participation credit; a valid share adds its target work as a performance bonus; the combined credit is capped once at 1% of the pool total.
 
@@ -237,7 +238,7 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 ### Phase 1: Core System ✅ COMPLETE
 
 - [x] Foundry project setup, OpenZeppelin installed
-- [x] `CurrencyToken.sol` — minimal ERC-20 with CREATE2 constructor params (incl. dayHash)
+- [x] `CurrencyToken.sol` — minimal ERC-20 (now a clone implementation); committed params (incl. dayHash) live in initCode as the clone's immutable args
 - [x] `PlayerNFT.sol` — lazy minting, address-as-tokenId
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
@@ -265,24 +266,22 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 - [ ] Share expiration (practical concern, TBD)
 - [ ] Gas optimization
   - [x] submitShare score reads — used `latest()` (O(1) tail read) instead of `upperLookup`/`upperLookupRecent`; valid because checkpoints are keyed by monotonic `today`, so the latest key is always <= today. Invariant documented inline.
-  - [ ] **BIG TODO — Minimize the deployed currency contract (proxy/clone pattern) to cut deployment-address gas.**
+  - [x] **DONE — Currency contracts deployed as minimal-proxy clones (EIP-1167 + immutable args).** `CurrencyToken` is now a shared implementation (`currencyImpl`, deployed in MiningPool's constructor); each vanity address is a ~45-byte clone with the committed params as immutable args, so CREATE2 hashes ~205 bytes instead of the full ~4.7KB token.
 
-    **Why.** Every `submitShare` recomputes the CREATE2 init-code hash, which means hashing the *full* `CurrencyToken` creation bytecode (~4,742 bytes ≈ 149 words) concatenated with the 5 committed args — on top of two ~5 KB memory allocations. That is ~3–6K gas **per share** on the hot path, paid purely because the deployed contract is large. The keccak itself is unavoidable (CREATE2 hashes the whole init code; keccak is not prefix-composable, so caching `keccak256(creationCode)` does NOT help), so the only real lever is to **shrink the bytecode that gets hashed**.
+    **Result (measured).** `submitShare` median 174,718 → 171,668 (~3K/share saved on the hot path); `deployCurrency` avg 780,402 → 195,073, max 985,364 → 249,304 (deploying a 45-byte proxy instead of the full contract). All 97 tests pass.
 
-    **Approach — minimal proxy with immutable args (clone-with-immutable-args).** Deploy ONE full `CurrencyToken` implementation once (in MiningPool's constructor, alongside PlayerNFT/CurrencyNFT) and store it as `immutable currencyImpl`. Each discovered vanity address becomes a ~55-byte EIP-1167 clone pointing at that impl, with the committed params appended as immutable args. This drops the hashed init code from ~4,900 → ~215 bytes (~22×), taking `submitShare`'s address computation from ~3–6K to sub-1K gas. OZ 5.6 has native support — no external lib:
-      - `Clones.predictDeterministicAddressWithImmutableArgs(currencyImpl, args, salt, address(this))` for on-chain address prediction (submitShare / registerCurrency).
-      - `Clones.cloneDeterministicWithImmutableArgs(currencyImpl, args, salt)` in `deployCurrency`, then `initializeDistribution(totalSupply)`.
-      - `Clones.fetchCloneArgs(address(this))` inside the impl to read the per-instance params.
+    **How.** OZ 5.6 `Clones`, no external lib:
+      - `predictDeterministicAddressWithImmutableArgs(currencyImpl, args, salt)` for on-chain address derivation (submitShare / registerCurrency / computeVanityAddress) — returns the address directly, which works because work is now scored on the address (Resolved Design Decision #11), so the full 32-byte hash is no longer needed on the hot path.
+      - `cloneDeterministicWithImmutableArgs(currencyImpl, args, salt)` in `deployCurrency`, then `initializeDistribution(totalSupply)`.
+      - `fetchCloneArgs(address(this))` inside the impl to read per-instance params.
 
-    **Things to NOT forget / to consider:**
-    - **Address binding is preserved.** The committed params `(playerId, dayNumber, targetWork, counter, dayHash)` stay in the init code (as the clone's immutable args), so the vanity address still cryptographically binds to them (anti-Sybil intact). `totalSupply` stays a deploy-time storage value (it doesn't affect the address).
-    - **Off-chain mining stays cheap — this is WHY clone, not CREATE3.** Because the commitment stays in the init code, the miner precomputes `initCodeHash` once and does 1 keccak/salt-iteration (unchanged from today). CREATE3 was considered and rejected: it would force the commitment into the *salt* (the per-iteration variable), tripling off-chain hashing (~3 keccaks/iteration) — a bad trade for a system whose core cost is billions of off-chain hashes. CREATE3's only edge (a normal full contract at the vanity address, and cross-chain same-address deploys) doesn't outweigh that.
-    - **Delegatecall-safety of the impl.** No constructor runs on a clone, and clones share one impl. Per-instance params MUST be read via `fetchCloneArgs`, NOT constructor `immutable`s (those bake into the shared impl). `miningPool` and `name`/`symbol` can stay impl-level constants (same for all clones). Storage init (mint, totalSupply, `initialized` guard) happens in an explicit `initializeDistribution` call, since clones are born with empty storage.
-    - **Storage lives in the proxy.** All ERC20 state (`_balances`, `_allowances`, `totalSupply`) lives at the vanity address's storage; the impl's own storage is unused. Token tracking / events are correctly attributed to the vanity address.
-    - **Runtime trade-off.** Token calls (transfer, claim, balanceOf) now delegatecall the impl → ~2.1–2.6K extra per call. Negligible vs. the mining loop (those calls are rare), but worth confirming with a gas profile.
-    - **Etherscan / UX caveat.** The vanity address will show the ~55-byte proxy stub, not the full token code (verify source once on the impl). Etherscan auto-detects canonical EIP-1167 well, but the immutable-args variant may show as raw bytecode. Some users/marketplaces may perceive "a proxy at my hard-mined vanity address" as less legit than a standalone contract — a soft cost to weigh.
-    - **Security unchanged.** The clone init code is recomputed on-chain from the trusted `currencyImpl` + args, so the proof-of-work is still bound to a genuinely deployable address (a miner can't submit a fake `initCodeHash`).
-    - **Scope / test impact.** Sizeable refactor: split CurrencyToken into impl + clone deployment, rework the 3 init-code-hash sites + `deployCurrency` + `getInitCodeHash`/`computeVanityAddress`, update the off-chain client and the test `_findValidSalt` to the clone formula. Credit/scoring logic in `submitShare` is untouched (only the init-code construction changes), so those tests stay; deployment/NFT/distribution suites need rework. Validate with a before/after gas profile. Supersedes the old "creationCode CODECOPY assembly nibble" idea (that recovered only the memory-copy waste, ~1–3K; this attacks the bytecode size itself).
+    **Clone caveats handled (kept for reference):**
+    - **Address binding preserved.** Committed params stay in the init code (clone immutable args), so the vanity address still binds to them (anti-Sybil intact). `totalSupply` stays a deploy-time storage value.
+    - **Off-chain mining stays cheap — this is WHY clone, not CREATE3.** The commitment stays in the init code, so the miner precomputes `initCodeHash` once and does 1 keccak/salt-iteration. CREATE3 was rejected: it forces the commitment into the *salt* (the per-iteration variable), tripling off-chain hashing.
+    - **Delegatecall-safety.** No constructor runs on a clone. Per-instance params read via `fetchCloneArgs`, NOT constructor `immutable`s (those bake into the shared impl). `miningPool` stays an impl immutable and `name`/`symbol` `pure` constants (code, survive delegatecall). Storage init happens in `initializeDistribution` (clones are born with empty storage).
+    - **Storage lives in the proxy.** All ERC20 state lives at the vanity address; events attributed there.
+    - **`getInitCodeHash` is now `view`** (reads `currencyImpl`) and only an off-chain/testing helper; it holds the one replica of OZ's private clone-bytecode template.
+    - **Etherscan / UX caveat.** The vanity address shows the ~45-byte proxy stub, not the full token code (verify source once on the impl). The immutable-args variant may show as raw bytecode. A soft cost — "a proxy at my hard-mined vanity address" may feel less legit to some.
 - [x] Move `getCurrentDayHash()` out of "VIEW FUNCTIONS" section (it modifies state) — now in CORE FUNCTIONS with a STATE-CHANGING NatSpec
 - [x] Add explicit `player == address(0)` revert (`ZeroPlayer`) in submitShare and registerCurrency
 - [x] Replaced `assert` with a descriptive `DeployedAddressMismatch` revert in deployCurrency (assert consumes all gas on failure)
