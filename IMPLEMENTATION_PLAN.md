@@ -1,4 +1,4 @@
-# Collaborative Vanity Address Mining — Implementation Plan (v3)
+# Collaborative Vanity Address Mining — Implementation Plan (v4)
 
 ## Context
 
@@ -241,7 +241,7 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 - [x] `PlayerNFT.sol` — lazy minting, address-as-tokenId
 - [x] `CurrencyNFT.sol` — discovery storage, deployment tracking
 - [x] `MiningPool.sol` — share submission, scoring, day management, NFT deployment, currency registration & deployment
-- [x] `MiningPool.t.sol` — 44 tests covering submission, ordering, work, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
+- [x] `MiningPool.t.sol` — 52 tests covering submission, ordering, work, credits, days, checkpoints, chain lock, dayHash, getCurrentDayHash
 - [x] `NFTIntegration.t.sol` — 26 tests covering PlayerNFT, CurrencyNFT, registration, caller-is-player guard, deployment, full flow
 - [x] Self-only submission — `submitShare` and `registerCurrency` require `msg.sender == player`; CurrencyNFT minted to current PlayerNFT owner
 - [x] Phase 1 tests passing before Phase 2 additions
@@ -255,7 +255,7 @@ Capping the combined credit keeps the 1% per-share ceiling while guaranteeing a 
 - [x] Auto-boost pool on currency deployment — add registered address full-hash work to `totalIntegratedWork` (not `totalShareCount`). Prevents withholding work from the pool. Double-counting with prior share submission is intentional (gift to the commons).
 - [x] Integration tests for full mint flow
 - [x] `TokenDistribution.t.sol` — 19 tests covering initialization, snapshot timing, claim math, PlayerNFT claim recipients, caller-is-owner guard, duplicate claims, zero-score claims, supply cap, auto-boost, multi-player multi-day flow, multiple independent currencies
-- [x] 88 tests total, all passing
+- [x] 97 tests total, all passing (52 MiningPool + 26 NFTIntegration + 19 TokenDistribution)
 
 ### Phase 3: Polish & Edge Cases
 
